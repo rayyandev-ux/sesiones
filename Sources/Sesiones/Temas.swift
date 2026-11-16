@@ -10,6 +10,12 @@ enum TemaId: String, CaseIterable, Identifiable {
     case consola, consolaDia, consolaNoche, noche
     var id: String { rawValue }
 
+    /// El tema elegido (o el de SESIONES_TEMA, solo para pruebas). Por defecto, Consola.
+    static var guardado: TemaId {
+        let prueba = ProcessInfo.processInfo.environment["SESIONES_TEMA"].flatMap(TemaId.init(rawValue:))
+        return prueba ?? UserDefaults.standard.string(forKey: "tema").flatMap(TemaId.init(rawValue:)) ?? .consola
+    }
+
     var nombre: String {
         switch self {
         case .consola: return "Consola (cambia con la hora)"
@@ -77,7 +83,9 @@ struct Paleta {
 
 /// Los colores que usa toda la app. Siempre leen la paleta del tema elegido.
 enum Tema {
-    nonisolated(unsafe) static var p: Paleta = .noche
+    /// Arranca ya con el tema elegido: las pestañas se crean al abrir la app, antes que la ventana,
+    /// y si leían un tema por defecto la terminal quedaba con el color de otro tema (bug del 2026-11-15).
+    nonisolated(unsafe) static var p: Paleta = Paleta.de(TemaId.guardado)
 
     static var fondo: Color { p.fondo }
     static var lado: Color { p.lado }
@@ -115,9 +123,7 @@ final class Apariencia: ObservableObject {
     private var timer: Timer?
 
     init() {
-        // solo para pruebas: SESIONES_TEMA=consolaDia… fija el tema sin tocar lo que eligió Hugo
-        let prueba = ProcessInfo.processInfo.environment["SESIONES_TEMA"].flatMap(TemaId.init(rawValue:))
-        let e = prueba ?? UserDefaults.standard.string(forKey: "tema").flatMap(TemaId.init(rawValue:)) ?? .consola
+        let e = TemaId.guardado
         eleccion = e
         paleta = Paleta.de(e)
         Tema.p = paleta

@@ -75,6 +75,8 @@ struct SesionesApp: App {
                 .onAppear {
                     AtajoGlobal.registrar { [weak store] in store?.alternarVentana() }
                     apariencia.alCambiar = { [weak store] in store?.recolorear() }
+                    store.recolorear() // por si alguna pestaña se creó con otros colores
+
                     voz.vigilarFn()
                     voz.alTerminar = { [weak store] texto in store?.escribirDictado(texto) }
                     // solo para pruebas: SESIONES_FOTO_USO=/ruta.png guarda una foto del panel de uso
