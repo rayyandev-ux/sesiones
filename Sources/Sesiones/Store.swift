@@ -647,38 +647,57 @@ final class Store: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
         actualizarInsignia()
     }
 
+    /// Leer la pantalla toma el mismo candado que el hilo que procesa la salida de la terminal: si se hace en el
+    /// hilo principal, con varias sesiones escribiendo la app entera se congela. Por eso se lee en una cola aparte.
+    private let colaEstado = DispatchQueue(label: "sesiones.estado", qos: .utility)
+    private var leyendo = false
+
     private func vigilar() {
-        let v = visibles()
+        guard !leyendo else { return } // la lectura anterior sigue en curso: no se acumulan
+        var porLeer: [Term] = []
         for t in terminales where t.iniciado {
             let hubo = t.salida.tomar()
-            guard hubo || t.estado == .trabajando || t.quietos < 3 else { continue }
-            let leido = t.leerEstado()
-            let antes = t.estado
-            var nuevo = antes
-            switch leido {
-            case .permiso:
-                t.quietos = 0
-                nuevo = .permiso
-            case .trabajando:
-                t.quietos = 0
-                if antes != .trabajando { t.desde = Date() }
-                nuevo = .trabajando
-            default:
-                t.quietos += 1
-                if antes == .trabajando && t.quietos >= 2 { nuevo = .listo }
-                else if antes == .permiso && t.quietos >= 2 { nuevo = .nada }
-            }
-            guard nuevo != antes else { continue }
-            t.estado = nuevo
-            if let registro, let h = FileHandle(forWritingAtPath: registro) ?? { FileManager.default.createFile(atPath: registro, contents: nil); return FileHandle(forWritingAtPath: registro) }() {
-                h.seekToEndOfFile(); h.write("\(Date().timeIntervalSince1970) \(antes) -> \(nuevo)\n".data(using: .utf8)!); h.closeFile()
-            }
-            if (nuevo == .listo || nuevo == .permiso) && !v.contains(t.id) {
-                t.sinVer = true
-                if nuevo == .permiso || Date().timeIntervalSince(t.desde) > 4 { notificar(t, permiso: nuevo == .permiso) }
+            if hubo || t.estado == .trabajando || t.quietos < 3 { porLeer.append(t) }
+        }
+        guard !porLeer.isEmpty else { return }
+        leyendo = true
+        colaEstado.async { [weak self] in
+            let leidos = porLeer.map { ($0, $0.leerEstado()) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.leyendo = false
+                let v = self.visibles()
+                for (t, leido) in leidos where self.terminales.contains(where: { $0 === t }) { self.aplicarEstado(t, leido, visibles: v) }
+                self.actualizarInsignia()
             }
         }
-        actualizarInsignia()
+    }
+
+    private func aplicarEstado(_ t: Term, _ leido: Estado, visibles v: Set<UUID>) {
+        let antes = t.estado
+        var nuevo = antes
+        switch leido {
+        case .permiso:
+            t.quietos = 0
+            nuevo = .permiso
+        case .trabajando:
+            t.quietos = 0
+            if antes != .trabajando { t.desde = Date() }
+            nuevo = .trabajando
+        default:
+            t.quietos += 1
+            if antes == .trabajando && t.quietos >= 2 { nuevo = .listo }
+            else if antes == .permiso && t.quietos >= 2 { nuevo = .nada }
+        }
+        guard nuevo != antes else { return }
+        t.estado = nuevo
+        if let registro, let h = FileHandle(forWritingAtPath: registro) ?? { FileManager.default.createFile(atPath: registro, contents: nil); return FileHandle(forWritingAtPath: registro) }() {
+            h.seekToEndOfFile(); h.write("\(Date().timeIntervalSince1970) \(antes) -> \(nuevo)\n".data(using: .utf8)!); h.closeFile()
+        }
+        if (nuevo == .listo || nuevo == .permiso) && !v.contains(t.id) {
+            t.sinVer = true
+            if nuevo == .permiso || Date().timeIntervalSince(t.desde) > 4 { notificar(t, permiso: nuevo == .permiso) }
+        }
     }
 
     private func actualizarInsignia() {
