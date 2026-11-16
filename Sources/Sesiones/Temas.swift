@@ -214,24 +214,3 @@ struct FondoConsola: View {
         .allowsHitTesting(false)
     }
 }
-
-// MARK: - selector de tema
-
-struct MenuTema: View {
-    @EnvironmentObject var apariencia: Apariencia
-
-    var body: some View {
-        Menu {
-            Picker("Tema", selection: $apariencia.eleccion) {
-                ForEach(TemaId.allCases) { t in Text(t.nombre).tag(t) }
-            }
-            .pickerStyle(.inline)
-        } label: {
-            Image(systemName: "paintpalette").font(Letra.fuerte(12)).foregroundColor(Tema.gris)
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help("Tema: \(apariencia.eleccion.nombre)")
-    }
-}

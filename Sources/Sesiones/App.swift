@@ -80,6 +80,15 @@ struct SesionesApp: App {
                     voz.vigilarFn()
                     voz.alTerminar = { [weak store] texto in store?.escribirDictado(texto) }
                     // solo para pruebas: SESIONES_FOTO_USO=/ruta.png guarda una foto del panel de uso
+                    if let ruta = ProcessInfo.processInfo.environment["SESIONES_FOTO_CONFIG"] { // solo para pruebas
+                        let r = ImageRenderer(content: ConfiguracionVista().environmentObject(apariencia)
+                            .environment(\.colorScheme, apariencia.paleta.oscuro ? .dark : .light))
+                        r.scale = 2
+                        if let img = r.nsImage, let tiff = img.tiffRepresentation,
+                           let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+                            try? png.write(to: URL(fileURLWithPath: ruta))
+                        }
+                    }
                     if let ruta = ProcessInfo.processInfo.environment["SESIONES_FOTO_USO"] {
                         let r = ImageRenderer(content: PanelUso().environmentObject(uso).environment(\.colorScheme, .dark))
                         r.scale = 2
@@ -110,12 +119,6 @@ struct SesionesApp: App {
             CommandGroup(replacing: .saveItem) {
                 Button("Cerrar pestaña") { store.cerrarActiva() }.keyboardShortcut("w")
             }
-            CommandMenu("Tema") {
-                Picker("Tema", selection: $apariencia.eleccion) {
-                    ForEach(TemaId.allCases) { t in Text(t.nombre).tag(t) }
-                }
-                .pickerStyle(.inline)
-            }
             CommandMenu("Pestañas") {
                 Button("Dividir pantalla") { store.dividir() }.keyboardShortcut("d")
                 Divider()
@@ -130,6 +133,11 @@ struct SesionesApp: App {
                 Button("Achicar texto") { store.fuente(-1) }.keyboardShortcut("-")
                 Button("Tamaño normal") { store.fuente(0) }.keyboardShortcut("0")
             }
+        }
+        Settings {
+            ConfiguracionVista()
+                .environmentObject(apariencia)
+                .preferredColorScheme(apariencia.paleta.oscuro ? .dark : .light)
         }
     }
 }

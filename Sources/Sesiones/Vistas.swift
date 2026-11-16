@@ -61,18 +61,19 @@ func ordenarPorUso(_ cs: [Carpeta]) -> ([Carpeta], [Carpeta]) {
 struct Lateral: View {
     @EnvironmentObject var store: Store
     @AppStorage("lateralVerVacias") private var verVacias = false
+    @AppStorage("verRecientes") private var verRecientes = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack { // semáforos de la ventana a la izquierda, el tema a la derecha
+            HStack { // semáforos de la ventana a la izquierda, la configuración a la derecha
                 Spacer()
-                MenuTema().padding(.trailing, 14)
+                BotonConfiguracion().padding(.trailing, 12)
             }
             .frame(height: 46)
             ScrollView {
                 VStack(alignment: .leading, spacing: 1) {
                     // 1. lo último que usaste, a un clic
-                    if !store.recientes.isEmpty {
+                    if verRecientes && !store.recientes.isEmpty { // se apaga en Configuración
                         Titulo(texto: "Recientes")
                         ForEach(store.recientes.prefix(5)) { s in FilaRecienteLateral(sesion: s) }
                     }
