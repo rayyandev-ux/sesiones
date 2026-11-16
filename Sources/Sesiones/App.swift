@@ -6,6 +6,10 @@ final class Delegado: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        // el logo en el Dock sale del archivo, no de la memoria de íconos de macOS (que puede tener uno viejo)
+        if let ruta = Bundle.main.path(forResource: "Logo", ofType: "icns"), let logo = NSImage(contentsOfFile: ruta) {
+            NSApp.applicationIconImage = logo
+        }
         if ProcessInfo.processInfo.environment["SESIONES_FONDO"] == nil { NSApp.activate(ignoringOtherApps: true) }
     }
 }

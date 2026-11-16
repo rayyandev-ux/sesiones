@@ -9,7 +9,8 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/Sesiones "$APP/Contents/MacOS/Sesiones"
 strip -x "$APP/Contents/MacOS/Sesiones" 2>/dev/null || true
-cp recursos/Sesiones.icns "$APP/Contents/Resources/"
+# el ícono va como Logo.icns: un nombre nuevo hace que macOS no use el ícono viejo que tenía guardado
+cp recursos/Sesiones.icns "$APP/Contents/Resources/Logo.icns"
 cp recursos/fuentes/*.ttf recursos/fuentes/*.woff2 "$APP/Contents/Resources/"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -20,7 +21,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key><string>Sesiones</string>
   <key>CFBundleIdentifier</key><string>pe.rayyan.sesiones</string>
   <key>CFBundleExecutable</key><string>Sesiones</string>
-  <key>CFBundleIconFile</key><string>Sesiones</string>
+  <key>CFBundleIconFile</key><string>Logo</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$VERSION</string>
