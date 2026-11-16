@@ -82,7 +82,7 @@ final class Voz: ObservableObject {
         error = nil
         AVCaptureDevice.requestAccess(for: .audio) { ok in
             DispatchQueue.main.async {
-                guard ok else { self.falla("Sesiones no tiene permiso para el micrófono. Actívalo en Ajustes del Sistema → Privacidad → Micrófono."); return }
+                guard ok else { self.falla("Temperas Cremosas no tiene permiso para el micrófono. Actívalo en Ajustes del Sistema → Privacidad → Micrófono."); return }
                 if #available(macOS 26.0, *) { self.arrancarNuevo() } else { self.arrancarClasico() }
             }
         }

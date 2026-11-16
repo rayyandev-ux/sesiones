@@ -63,7 +63,7 @@ struct SesionesApp: App {
     }
 
     var body: some Scene {
-        Window("Sesiones", id: "principal") {
+        Window("Temperas Cremosas", id: "principal") {
             Raiz()
                 // al cambiar de tema se vuelve a dibujar todo con la paleta nueva
                 .id(apariencia.paleta.clave)

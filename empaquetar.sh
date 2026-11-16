@@ -1,9 +1,12 @@
 #!/bin/bash
-# Compila Sesiones en modo release, arma Sesiones.app y la instala en /Applications.
+# Compila la app en modo release, arma "Temperas Cremosas.app" y la instala en /Applications.
+# El proyecto y el programa siguen llamándose Sesiones; el nombre que se ve es Temperas Cremosas.
+# El identificador (pe.rayyan.sesiones) no cambia: así se conservan pestañas, grupos, tema y permisos.
 set -euo pipefail
 cd "$(dirname "$0")"
 swift build -c release
-APP=build/Sesiones.app
+NOMBRE="Temperas Cremosas"
+APP="build/$NOMBRE.app"
 VERSION=0.5.1
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -16,9 +19,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>CFBundleName</key><string>Sesiones</string>
+  <key>CFBundleName</key><string>$NOMBRE</string>
   <key>CFBundleDevelopmentRegion</key><string>es</string>
-  <key>CFBundleDisplayName</key><string>Sesiones</string>
+  <key>CFBundleDisplayName</key><string>$NOMBRE</string>
   <key>CFBundleIdentifier</key><string>pe.rayyan.sesiones</string>
   <key>CFBundleExecutable</key><string>Sesiones</string>
   <key>CFBundleIconFile</key><string>Logo</string>
@@ -40,10 +43,11 @@ FIRMA="${SESIONES_FIRMA:-$(cat .firma 2>/dev/null)}"
 codesign --force --sign "${FIRMA:--}" "$APP"
 if [ "${1:-}" != "--sin-instalar" ]; then
   # no se cierra la app abierta (puede tener sesiones trabajando): la nueva versión entra al volver a abrirla
-  rm -rf /Applications/Sesiones.app
+  rm -rf "/Applications/$NOMBRE.app"
+  rm -rf /Applications/Sesiones.app # el nombre de antes (2026-11-16): que no queden dos copias
   cp -R "$APP" /Applications/
   # una sola copia: la de /Applications (la de build/ no se queda, para no abrirla ni fijarla en el Dock por error)
   rm -rf "$APP"
-  echo "Instalada en /Applications/Sesiones.app"
+  echo "Instalada en /Applications/$NOMBRE.app"
   pgrep -x Sesiones >/dev/null && echo "La app está abierta: toca «Actualizar» arriba a la derecha (o ciérrala con ⌘Q y ábrela)." || true
 fi

@@ -1,4 +1,6 @@
-# Sesiones
+# Temperas Cremosas
+
+(antes *Sesiones*; el repo y el programa conservan ese nombre)
 
 Una app nativa para Mac que ordena tus sesiones de **Claude Code** y **Codex** en carpetas, como el Finder, y las abre en terminales dentro de la misma app. Liviana: Swift + SwiftUI + [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm), pesa ~4 MB y usa ~100 MB de RAM.
 
@@ -24,7 +26,7 @@ Requisitos: macOS 14 o más nuevo y las Command Line Tools de Xcode (`xcode-sele
 ```bash
 git clone https://github.com/rayyandev-ux/sesiones.git
 cd sesiones
-./empaquetar.sh        # compila, arma Sesiones.app y la copia a /Applications
+./empaquetar.sh        # compila, arma "Temperas Cremosas.app" y la copia a /Applications
 ```
 
 La app queda firmada localmente (ad-hoc). Si tienes un certificado de desarrollador, pon su hash en un archivo `.firma` (o en `SESIONES_FIRMA`) para que macOS recuerde el permiso del micrófono entre versiones:
@@ -62,7 +64,7 @@ sesiones --lista   # imprime carpetas y sesiones
 
 ## Privacidad
 
-Sesiones solo **lee** tus archivos locales (`~/.claude/projects` y la base de Codex en `~/.codex`, en modo solo lectura) y guarda su configuración en `~/.sesiones`. No envía nada a internet. El dictado usa el reconocimiento de voz de Apple; cuando tu idioma lo permite, se hace en el propio Mac.
+Temperas Cremosas solo **lee** tus archivos locales (`~/.claude/projects` y la base de Codex en `~/.codex`, en modo solo lectura) y guarda su configuración en `~/.sesiones`. No envía nada a internet. El dictado usa el reconocimiento de voz de Apple; cuando tu idioma lo permite, se hace en el propio Mac.
 
 ## Licencia
 
