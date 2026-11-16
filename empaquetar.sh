@@ -10,7 +10,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/Sesiones "$APP/Contents/MacOS/Sesiones"
 strip -x "$APP/Contents/MacOS/Sesiones" 2>/dev/null || true
 cp recursos/Sesiones.icns "$APP/Contents/Resources/"
-cp recursos/fuentes/*.ttf "$APP/Contents/Resources/"
+cp recursos/fuentes/*.ttf recursos/fuentes/*.woff2 "$APP/Contents/Resources/"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -40,6 +40,8 @@ if [ "${1:-}" != "--sin-instalar" ]; then
   # no se cierra la app abierta (puede tener sesiones trabajando): la nueva versión entra al volver a abrirla
   rm -rf /Applications/Sesiones.app
   cp -R "$APP" /Applications/
+  # una sola copia: la de /Applications (la de build/ no se queda, para no abrirla ni fijarla en el Dock por error)
+  rm -rf "$APP"
   echo "Instalada en /Applications/Sesiones.app"
-  pgrep -x Sesiones >/dev/null && echo "La app está abierta: ciérrala (⌘Q) y ábrela para usar la versión nueva." || true
+  pgrep -x Sesiones >/dev/null && echo "La app está abierta: toca «Actualizar» arriba a la derecha (o ciérrala con ⌘Q y ábrela)." || true
 fi

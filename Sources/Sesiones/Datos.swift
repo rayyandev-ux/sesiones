@@ -12,9 +12,11 @@ enum Motor: String {
 
 struct Sesion: Identifiable, Hashable {
     let id: String
-    let cwd: String
-    let proyecto: String
-    let titulo: String
+    /// carpeta del disco donde vive hoy (si moviste el proyecto con su historial, la nueva)
+    var cwd: String
+    /// ruta corta para mostrar: "Clientes/Rufino/web"
+    var proyecto: String
+    var titulo: String
     let prompt: String
     let prompts: [String]
     let sdk: Bool
@@ -23,12 +25,89 @@ struct Sesion: Identifiable, Hashable {
     var carpeta: String = ""
 }
 
+/// Una carpeta del árbol. Las de verdad copian tu disco (id = su ruta); las de grupo ("Archivo", "Pruebas",
+/// "Otros lugares", "Ya no existen") juntan lo que no está dentro de tu carpeta de proyectos.
 struct Carpeta: Identifiable, Hashable {
-    var id: String { nombre }
+    let id: String
     let nombre: String
-    var sesiones: [Sesion]
-    let fija: Bool
-    var auto = false
+    /// carpeta real del disco; nil si no existe o es un grupo
+    var ruta: String?
+    var grupo = false
+    /// sesiones abiertas justo en esta carpeta
+    var sesiones: [Sesion] = []
+    var hijos: [Carpeta] = []
+    /// sesiones de esta carpeta y de todo lo que tiene dentro
+    var total = 0
+
+    var todas: [Sesion] { sesiones + hijos.flatMap(\.todas) }
+
+    func buscar(_ id: String) -> Carpeta? {
+        if self.id == id { return self }
+        for h in hijos { if let c = h.buscar(id) { return c } }
+        return nil
+    }
+}
+
+/// Encuentra dónde está hoy la carpeta de una sesión.
+/// Claude Code guarda cada sesión en ~/.claude/projects/<clave>, y la clave es la ruta donde se abrió con "-" en
+/// lugar de todo lo que no sea letra o número. Si moviste un proyecto y te llevaste su historial, la ruta escrita
+/// dentro de la sesión es la vieja: la de hoy se saca buscando en el disco la carpeta que da esa misma clave.
+final class Rutas {
+    private var listas: [String: [(nombre: String, claves: [String])]] = [:]
+    private var resueltas: [String: String?] = [:]
+    private var carpetas: [String: Bool] = [:]
+    private let fm = FileManager.default
+
+    static func clave(_ ruta: String) -> String {
+        String(decoding: ruta.utf16.map { u -> UInt8 in
+            (u >= 48 && u <= 57) || (u >= 65 && u <= 90) || (u >= 97 && u <= 122) ? UInt8(u) : 45
+        }, as: UTF8.self)
+    }
+
+    func esCarpeta(_ ruta: String) -> Bool {
+        if let c = carpetas[ruta] { return c }
+        var dir: ObjCBool = false
+        let c = fm.fileExists(atPath: ruta, isDirectory: &dir) && dir.boolValue
+        carpetas[ruta] = c
+        return c
+    }
+
+    func real(cwd: String, clave: String) -> String {
+        if Rutas.clave(cwd) == clave && esCarpeta(cwd) { return cwd }
+        if let r = resueltas[clave] { return r ?? cwd }
+        let r = busca("", Substring(clave))
+        resueltas[clave] = r
+        return r ?? cwd
+    }
+
+    private func hijos(_ dir: String) -> [(nombre: String, claves: [String])] {
+        if let l = listas[dir] { return l }
+        let l = ((try? fm.contentsOfDirectory(atPath: dir)) ?? []).map { n -> (nombre: String, claves: [String]) in
+            // las tildes pueden estar guardadas juntas o separadas: se prueban las dos formas
+            let a = Rutas.clave(n.precomposedStringWithCanonicalMapping), b = Rutas.clave(n.decomposedStringWithCanonicalMapping)
+            return (n, a == b ? [a] : [a, b])
+        }
+        listas[dir] = l
+        return l
+    }
+
+    /// `resto` empieza con "-" (la barra que separa carpetas).
+    private func busca(_ dir: String, _ resto: Substring) -> String? {
+        guard resto.first == "-" else { return nil }
+        let cuerpo = resto.dropFirst()
+        for h in hijos(dir.isEmpty ? "/" : dir) {
+            for c in h.claves where cuerpo.hasPrefix(c) {
+                let sig = cuerpo.dropFirst(c.count)
+                let ruta = dir + "/" + h.nombre
+                if sig.isEmpty {
+                    if esCarpeta(ruta) { return ruta }
+                } else if sig.first == "-", esCarpeta(ruta), let r = busca(ruta, sig) {
+                    return r
+                }
+            }
+        }
+        return nil
+    }
 }
 
 enum Datos {
@@ -126,18 +205,20 @@ enum Datos {
            let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] { cacheVieja = o }
 
         var archivos: [String] = []
+        var claves: [String] = []
         let fm = FileManager.default
         for d in (try? fm.contentsOfDirectory(atPath: base)) ?? [] {
             let carpeta = base + "/" + d
             for f in (try? fm.contentsOfDirectory(atPath: carpeta)) ?? [] where f.hasSuffix(".jsonl") {
                 archivos.append(carpeta + "/" + f)
+                claves.append(d)
             }
         }
 
         let lock = NSLock()
         var cacheNueva: [String: Any] = [:]
-        var out: [Sesion] = []
-        out.reserveCapacity(archivos.count)
+        var leidas: [(Sesion, String)] = []
+        leidas.reserveCapacity(archivos.count)
 
         DispatchQueue.concurrentPerform(iterations: archivos.count) { i in
             let path = archivos[i]
@@ -167,13 +248,20 @@ enum Datos {
             }
             lock.lock()
             cacheNueva[path] = [key, info]
-            if let sesion { out.append(sesion) }
+            if let sesion { leidas.append((sesion, claves[i])) }
             lock.unlock()
         }
 
         if let d = try? JSONSerialization.data(withJSONObject: cacheNueva) {
             try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
             try? d.write(to: URL(fileURLWithPath: cache), options: .atomic)
+        }
+        // la carpeta donde vive hoy cada sesión (ahí es donde `claude --resume` la encuentra)
+        let rutas = Rutas()
+        var out = leidas.map { s, clave -> Sesion in
+            var s = s
+            s.cwd = rutas.real(cwd: s.cwd, clave: clave)
+            return s
         }
         out.sort { $0.mtime > $1.mtime }
         return out
@@ -246,205 +334,192 @@ enum Datos {
         try? d.write(to: URL(fileURLWithPath: conf), options: .atomic)
     }
 
+    static let nArchivo = "Archivo"
+    static let nFuera = "Otros lugares"
+    static let nPerdidas = "Ya no existen"
+    /// carpetas que no son proyectos: no se muestran dentro de una carpeta sin repositorio
+    private static let ruido: Set<String> = ["node_modules", "build", "dist", "vendor", "Pods", "DerivedData", "__pycache__", "venv"]
+
+    static func corta(_ ruta: String) -> String {
+        ruta == home ? "~" : ruta.hasPrefix(home + "/") ? "~" + ruta.dropFirst(home.count) : ruta
+    }
+
+    /// Pieza del árbol mientras se arma.
+    private final class Nodo {
+        let id: String, nombre: String, ruta: String?
+        var grupo = false
+        var sesiones: [Sesion] = []
+        var hijos: [String: Nodo] = [:]
+
+        init(id: String, nombre: String, ruta: String?, grupo: Bool = false) {
+            self.id = id; self.nombre = nombre; self.ruta = ruta; self.grupo = grupo
+        }
+
+        func hijo(_ llave: String, id: String, nombre: String, ruta: String?) -> Nodo {
+            if let h = hijos[llave] { return h }
+            let h = Nodo(id: id, nombre: nombre, ruta: ruta)
+            hijos[llave] = h
+            return h
+        }
+
+        func carpeta() -> Carpeta {
+            // en el mismo orden que el Finder
+            let hs = hijos.values.map { $0.carpeta() }.sorted { $0.nombre.localizedStandardCompare($1.nombre) == .orderedAscending }
+            return Carpeta(id: id, nombre: nombre, ruta: ruta, grupo: grupo, sesiones: sesiones, hijos: hs,
+                           total: sesiones.count + hs.reduce(0) { $0 + $1.total })
+        }
+    }
+
+    /// Arma el árbol de carpetas copiando tu disco: lo que hay dentro de "base" (carpetas.json) sale igual que en el
+    /// Finder, y cada sesión va a la carpeta donde se abrió. Lo demás va a los grupos del final.
     static func clasifica(_ sesiones: [Sesion], conf: [String: Any]) -> [Carpeta] {
-        let carpetas = conf["carpetas"] as? [[String: Any]] ?? []
-        let nombres = carpetas.compactMap { $0["nombre"] as? String }
+        let fm = FileManager.default
+        let rutas = Rutas()
+        let raiz = carpetaBase(conf)
+        let nombreRaiz = (raiz as NSString).lastPathComponent
         let pruebas = conf["pruebas"] as? [String: Any]
-        let nPruebas = pruebas?["nombre"] as? String
         let rPruebas = pruebas?["rutas"] as? [String] ?? []
-        let otros = nombres.last ?? "Otros"
-        let manual = conf["manual"] as? [String: String] ?? [:]
-        let rutas = carpetas.map { $0["rutas"] as? [String] ?? [] }
-        let regs: [[NSRegularExpression]] = carpetas.map {
-            ($0["palabras"] as? [String] ?? []).compactMap { try? NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
-        }
-        let porProyecto = (conf["porProyecto"] as? Bool) == true
-        let prioridad = carpetas.map { ($0["prioridad"] as? Bool) == true }
         let archivo = Set(conf["archivo"] as? [String] ?? [])
-        let nArchivo = "Archivo"
-        var grupos: [String: [Sesion]] = [:]
-        for n in nombres { grupos[n] = [] }
-        if let nPruebas { grupos[nPruebas] = [] }
-        grupos[nArchivo] = []
 
-        func cuenta(_ r: NSRegularExpression, _ t: String) -> Int {
-            r.numberOfMatches(in: t, range: NSRange(location: 0, length: (t as NSString).length))
+        let arbol = Nodo(id: raiz, nombre: nombreRaiz, ruta: raiz)
+        func nodo(_ ruta: String) -> Nodo {
+            var n = arbol, actual = raiz
+            for parte in ruta.dropFirst(raiz.count).split(separator: "/") {
+                actual += "/" + parte
+                n = n.hijo(String(parte), id: actual, nombre: String(parte), ruta: actual)
+            }
+            return n
         }
 
-        var autos = Set<String>()
+        // el disco manda: dos niveles de carpetas tal cual, y un tercero dentro de las que no son un repositorio
+        // (un cliente o producto con varias partes: web, ios, android)
+        func visibles(_ dir: String) -> [String] {
+            ((try? fm.contentsOfDirectory(atPath: dir)) ?? []).filter { n in
+                guard !n.hasPrefix("."), !ruido.contains(n), rutas.esCarpeta(dir + "/" + n) else { return false }
+                let paquete = try? URL(fileURLWithPath: dir + "/" + n).resourceValues(forKeys: [.isPackageKey]).isPackage
+                return paquete != true
+            }
+        }
+        for a in visibles(raiz) {
+            let ra = raiz + "/" + a
+            _ = nodo(ra)
+            for b in visibles(ra) {
+                let rb = ra + "/" + b
+                _ = nodo(rb)
+                if fm.fileExists(atPath: rb + "/.git") { continue }
+                for c in visibles(rb) { _ = nodo(rb + "/" + c) }
+            }
+        }
+
+        let fuera = Nodo(id: nFuera, nombre: nFuera, ruta: nil, grupo: true)
+        let perdidas = Nodo(id: nPerdidas, nombre: nPerdidas, ruta: nil, grupo: true)
+        let nodoPruebas = (pruebas?["nombre"] as? String).map { Nodo(id: $0, nombre: $0, ruta: nil, grupo: true) }
+        let nodoArchivo = Nodo(id: nArchivo, nombre: nArchivo, ruta: nil, grupo: true)
+
         for var s in sesiones {
-            var destino: String? = archivo.contains(s.id) ? nArchivo : manual[s.id]
-            if let d = destino, grupos[d] == nil { destino = nil }
-            if destino == nil, let nPruebas, rPruebas.contains(where: { s.cwd.contains($0) }) { destino = nPruebas }
-            if destino == nil {
-                // carpetas con prioridad: basta una coincidencia en el título o el primer mensaje
-                let t = (s.titulo + " " + s.prompt).lowercased()
-                if let k = regs.indices.first(where: { prioridad[$0] && regs[$0].contains { cuenta($0, t) > 0 } }) { destino = nombres[k] }
+            let dentro = s.cwd == raiz || s.cwd.hasPrefix(raiz + "/")
+            let ultimo = (s.cwd as NSString).lastPathComponent
+            s.proyecto = !dentro ? corta(s.cwd) : s.cwd == raiz ? nombreRaiz : String(s.cwd.dropFirst(raiz.count + 1))
+            let destino: Nodo
+            if archivo.contains(s.id) {
+                destino = nodoArchivo
+            } else if let p = nodoPruebas, rPruebas.contains(where: { s.cwd.contains($0) }) {
+                destino = p
+            } else if !rutas.esCarpeta(s.cwd) {
+                destino = perdidas.hijo(s.cwd, id: nPerdidas + ":" + s.cwd, nombre: ultimo, ruta: nil)
+            } else if dentro {
+                destino = nodo(s.cwd)
+            } else {
+                destino = fuera.hijo(s.cwd, id: s.cwd, nombre: s.cwd == home ? "Inicio (~)" : ultimo, ruta: s.cwd)
             }
-            if destino == nil, let k = rutas.firstIndex(where: { $0.contains(where: { s.cwd.contains($0) }) }) { destino = nombres[k] }
-            if destino == nil {
-                let titulo = s.titulo.lowercased()
-                let resto = s.prompts.joined(separator: " ").lowercased()
-                var mejor = otros, puntos = 0
-                for (k, rs) in regs.enumerated() {
-                    let p = rs.reduce(0) { $0 + 3 * cuenta($1, titulo) + cuenta($1, resto) }
-                    if p > puntos { mejor = nombres[k]; puntos = p }
-                }
-                destino = mejor
-            }
-            if porProyecto && destino == otros && s.proyecto != "~" && grupos[s.proyecto] == nil || porProyecto && destino == otros && autos.contains(s.proyecto) {
-                destino = s.proyecto
-                autos.insert(s.proyecto)
-            }
-            s.carpeta = destino!
-            grupos[destino!, default: []].append(s)
+            s.carpeta = destino.id
+            destino.sesiones.append(s)
         }
-        var lista = nombres.filter { $0 != otros }.map { Carpeta(nombre: $0, sesiones: grupos[$0] ?? [], fija: false) }
-        // carpetas automáticas (una por proyecto), la más reciente primero
-        lista += autos.map { Carpeta(nombre: $0, sesiones: grupos[$0] ?? [], fija: true, auto: true) }
-            .sorted { ($0.sesiones.first?.mtime ?? .distantPast) > ($1.sesiones.first?.mtime ?? .distantPast) }
-        if let g = grupos[otros], !g.isEmpty || !porProyecto { lista.append(Carpeta(nombre: otros, sesiones: g, fija: true)) }
-        if let nPruebas, let g = grupos[nPruebas], !g.isEmpty {
-            lista.append(Carpeta(nombre: nPruebas, sesiones: g, fija: true))
+
+        var lista = arbol.carpeta().hijos
+        // las sesiones abiertas directo en la carpeta de proyectos, sin entrar a ninguna
+        if !arbol.sesiones.isEmpty {
+            lista.append(Carpeta(id: raiz, nombre: "Sueltas en " + nombreRaiz, ruta: raiz, grupo: true,
+                                 sesiones: arbol.sesiones, total: arbol.sesiones.count))
         }
-        if let g = grupos[nArchivo], !g.isEmpty {
-            lista.append(Carpeta(nombre: nArchivo, sesiones: g, fija: true))
+        for g in [fuera, perdidas, nodoPruebas, nodoArchivo].compactMap({ $0 }) {
+            let c = g.carpeta()
+            if c.total > 0 { lista.append(c) }
         }
         return lista
     }
 
-    static func todo() -> (carpetas: [Carpeta], total: Int, ids: Set<String>) {
-        let sesiones = (cargaSesiones() + cargaCodex()).sorted { $0.mtime > $1.mtime }
-        return (clasifica(sesiones, conf: cargaConf()), sesiones.count, Set(sesiones.map(\.id)))
+    static func todo() -> (carpetas: [Carpeta], sesiones: [Sesion], raiz: String, nombres: [String: String]) {
+        let conf = cargaConf()
+        let nombres = conf["nombres"] as? [String: String] ?? [:]
+        // el nombre que le pusiste a una sesión manda sobre el que le puso Claude
+        let sesiones = (cargaSesiones() + cargaCodex())
+            .map { s -> Sesion in
+                guard let n = nombres[s.id] else { return s }
+                var s = s
+                s.titulo = n
+                return s
+            }
+            .sorted { $0.mtime > $1.mtime }
+        let carpetas = clasifica(sesiones, conf: conf)
+        return (carpetas, carpetas.flatMap(\.todas).sorted { $0.mtime > $1.mtime }, carpetaBase(conf), nombres)
     }
 
-    // MARK: cambios en carpetas
+    // MARK: nombres que les pones a las sesiones (se ven en la app, no cambian el historial de Claude)
 
-    private static func existe(_ c: [String: Any], _ nombre: String) -> Bool {
-        let carpetas = c["carpetas"] as? [[String: Any]] ?? []
-        return carpetas.contains { ($0["nombre"] as? String) == nombre } || ((c["pruebas"] as? [String: Any])?["nombre"] as? String) == nombre
-            || nombre == "Archivo"
-    }
-
-    /// Devuelve un mensaje de error, o nil si salió bien.
-    static func crearCarpeta(_ nombre: String) -> String? {
-        let nombre = limpia(nombre)
+    /// nil o vacío quita el nombre y vuelve el que le puso Claude.
+    static func nombrar(_ id: String, _ nombre: String?) {
         var c = cargaConf()
-        if nombre.isEmpty { return "Ponle un nombre" }
-        if existe(c, nombre) { return "Ya existe una carpeta con ese nombre" }
-        var carpetas = c["carpetas"] as? [[String: Any]] ?? []
-        carpetas.insert(["nombre": nombre, "rutas": [String](), "palabras": [String]()], at: max(0, carpetas.count - 1))
-        c["carpetas"] = carpetas
+        var n = c["nombres"] as? [String: String] ?? [:]
+        let limpio = limpia(nombre ?? "")
+        n[id] = limpio.isEmpty ? nil : limpio
+        c["nombres"] = n
         guardaConf(c)
-        return nil
     }
 
-    static func renombrar(_ viejo: String, _ nuevo: String) -> String? {
-        let nuevo = limpia(nuevo)
-        var c = cargaConf()
-        if nuevo.isEmpty { return "Ponle un nombre" }
-        if nuevo == viejo { return nil }
-        if existe(c, nuevo) { return "Ya existe una carpeta con ese nombre" }
-        var carpetas = c["carpetas"] as? [[String: Any]] ?? []
-        if let k = carpetas.firstIndex(where: { ($0["nombre"] as? String) == viejo }) {
-            carpetas[k]["nombre"] = nuevo
-            c["carpetas"] = carpetas
-        } else if var p = c["pruebas"] as? [String: Any], (p["nombre"] as? String) == viejo {
-            p["nombre"] = nuevo
-            c["pruebas"] = p
-        } else { return "No encontré esa carpeta" }
-        var manual = c["manual"] as? [String: String] ?? [:]
-        for (k, v) in manual where v == viejo { manual[k] = nuevo }
-        c["manual"] = manual
-        guardaConf(c)
-        return nil
-    }
-
-    static func borrar(_ nombre: String) -> String? {
-        var c = cargaConf()
-        var carpetas = c["carpetas"] as? [[String: Any]] ?? []
-        guard let k = carpetas.firstIndex(where: { ($0["nombre"] as? String) == nombre }), k < carpetas.count - 1 else {
-            return "Esa carpeta no se puede borrar"
+    /// La rama de git de una carpeta (o el commit si no está en una rama), como la muestra Warp.
+    static func rama(de dir: String) -> String? {
+        let fm = FileManager.default
+        var d = dir
+        while !d.isEmpty && d != "/" && d != home {
+            let g = d + "/.git"
+            var esDir: ObjCBool = false
+            if fm.fileExists(atPath: g, isDirectory: &esDir) {
+                var gitdir = g
+                if !esDir.boolValue { // worktree o submódulo: ".git" es un archivo que apunta a la carpeta real
+                    guard let t = try? String(contentsOfFile: g, encoding: .utf8), t.hasPrefix("gitdir:") else { return nil }
+                    let r = t.dropFirst(7).trimmingCharacters(in: .whitespacesAndNewlines)
+                    gitdir = r.hasPrefix("/") ? r : d + "/" + r
+                }
+                guard let head = try? String(contentsOfFile: gitdir + "/HEAD", encoding: .utf8) else { return nil }
+                let h = head.trimmingCharacters(in: .whitespacesAndNewlines)
+                return h.hasPrefix("ref: refs/heads/") ? String(h.dropFirst(16)) : String(h.prefix(7))
+            }
+            d = (d as NSString).deletingLastPathComponent
         }
-        carpetas.remove(at: k)
-        c["carpetas"] = carpetas
-        var manual = c["manual"] as? [String: String] ?? [:]
-        for (id, v) in manual where v == nombre { manual[id] = nil }
-        c["manual"] = manual
-        guardaConf(c)
         return nil
     }
 
-    static func mover(_ ids: [String], a carpeta: String) -> String? {
-        var c = cargaConf()
-        guard existe(c, carpeta) else { return "No encontré esa carpeta" }
-        var manual = c["manual"] as? [String: String] ?? [:]
-        for id in ids { manual[id] = carpeta }
-        c["manual"] = manual
-        if var a = c["archivo"] as? [String] { a.removeAll { ids.contains($0) }; c["archivo"] = a }
-        guardaConf(c)
-        return nil
-    }
+    // MARK: archivo
 
     static func archivar(_ ids: [String], _ si: Bool) {
         var c = cargaConf()
         var a = c["archivo"] as? [String] ?? []
         if si { a.append(contentsOf: ids.filter { !a.contains($0) }) } else { a.removeAll { ids.contains($0) } }
         c["archivo"] = a
-        if !si {
-            var manual = c["manual"] as? [String: String] ?? [:]
-            for id in ids where manual[id] == "Archivo" { manual[id] = nil }
-            c["manual"] = manual
-        }
         guardaConf(c)
     }
 
-    /// Carpeta de trabajo (en disco) donde arrancan las sesiones nuevas de una carpeta.
-    /// Carpeta del disco donde se crean las carpetas de trabajo nuevas.
-    static func carpetaBase() -> String {
-        let b = (cargaConf()["base"] as? String) ?? "~/Proyectos"
-        return (b as NSString).expandingTildeInPath
-    }
-
-    static func dirGuardado(_ nombre: String) -> String? {
-        let carpetas = cargaConf()["carpetas"] as? [[String: Any]] ?? []
-        return (carpetas.first { ($0["nombre"] as? String) == nombre }?["dir"] as? String).map { ($0 as NSString).expandingTildeInPath }
-    }
-
-    /// Guarda la carpeta de trabajo y la añade a sus rutas: todo lo que se abra ahí cae solo en esta carpeta.
-    static func ponDir(_ nombre: String, _ dir: String) {
-        var c = cargaConf()
-        var carpetas = c["carpetas"] as? [[String: Any]] ?? []
-        guard let k = carpetas.firstIndex(where: { ($0["nombre"] as? String) == nombre }) else { return }
-        if let viejo = carpetas[k]["dir"] as? String, var r = carpetas[k]["rutas"] as? [String] {
-            r.removeAll { $0 == viejo }
-            carpetas[k]["rutas"] = r
-        }
-        carpetas[k]["dir"] = dir
-        var rutas = carpetas[k]["rutas"] as? [String] ?? []
-        if !rutas.contains(dir) { rutas.append(dir) }
-        carpetas[k]["rutas"] = rutas
-        c["carpetas"] = carpetas
-        guardaConf(c)
+    /// Tu carpeta de proyectos ("base" en carpetas.json): de ahí sale el árbol.
+    static func carpetaBase(_ conf: [String: Any]? = nil) -> String {
+        let b = ((conf ?? cargaConf())["base"] as? String) ?? "~/Proyectos"
+        return ((b as NSString).expandingTildeInPath as NSString).standardizingPath
     }
 
     /// Nombre de carpeta seguro para el disco ("GTA 6 / clips" → "GTA 6 - clips").
     static func nombreEnDisco(_ nombre: String) -> String {
         let n = limpia(nombre.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-"))
         return n.isEmpty || n.hasPrefix(".") ? "carpeta" : n
-    }
-
-    static func mueveCarpeta(_ nombre: String, antesDe destino: String) {
-        var c = cargaConf()
-        var carpetas = c["carpetas"] as? [[String: Any]] ?? []
-        guard carpetas.count > 1,
-              let k = carpetas.firstIndex(where: { ($0["nombre"] as? String) == nombre }), k < carpetas.count - 1 else { return }
-        let item = carpetas.remove(at: k)
-        var j = carpetas.firstIndex(where: { ($0["nombre"] as? String) == destino }) ?? (carpetas.count - 1)
-        j = min(j, carpetas.count - 1)
-        carpetas.insert(item, at: j)
-        c["carpetas"] = carpetas
-        guardaConf(c)
     }
 }
 

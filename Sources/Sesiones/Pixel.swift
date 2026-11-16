@@ -20,7 +20,7 @@ extension NSColor {
     }
 }
 
-// MARK: - tipografías de la marca (Manrope para títulos, DM Sans para el resto)
+// MARK: - tipografías: Manrope y DM Sans en el original; Pixelify Sans y Chakra Petch en la consola (las de hugorocha.pe)
 
 enum Letra {
     static func registrar() {
@@ -29,19 +29,32 @@ enum Letra {
         dirs.append(URL(fileURLWithPath: FileManager.default.currentDirectoryPath + "/recursos/fuentes"))
         for d in dirs {
             let fuentes = ((try? FileManager.default.contentsOfDirectory(at: d, includingPropertiesForKeys: nil)) ?? [])
-                .filter { $0.pathExtension == "ttf" }
+                .filter { $0.pathExtension == "ttf" || $0.pathExtension == "woff2" }
             guard !fuentes.isEmpty else { continue }
             for f in fuentes { CTFontManagerRegisterFontsForURL(f as CFURL, .process, nil) }
             break
         }
         hay = NSFont(name: "DMSans-Regular", size: 12) != nil
+        hayConsola = NSFont(name: "PixelifySans-Regular", size: 12) != nil && NSFont(name: "ChakraPetch-Regular", size: 12) != nil
     }
 
     nonisolated(unsafe) private static var hay = false
+    nonisolated(unsafe) private static var hayConsola = false
+    private static var consola: Bool { hayConsola && Tema.consola }
 
-    static func titulo(_ t: CGFloat) -> Font { hay ? .custom("Manrope-ExtraBold", fixedSize: t) : .system(size: t, weight: .heavy) }
-    static func fuerte(_ t: CGFloat) -> Font { hay ? .custom("DMSans-SemiBold", fixedSize: t) : .system(size: t, weight: .semibold) }
-    static func texto(_ t: CGFloat) -> Font { hay ? .custom("DMSans-Regular", fixedSize: t) : .system(size: t) }
+    /// En la consola los títulos van en Pixelify Sans; los números y el texto en Chakra Petch (en Pixelify el 5 parece S).
+    static func titulo(_ t: CGFloat) -> Font {
+        if consola { return .custom("PixelifySans-Regular", fixedSize: t * 1.08) }
+        return hay ? .custom("Manrope-ExtraBold", fixedSize: t) : .system(size: t, weight: .heavy)
+    }
+    static func fuerte(_ t: CGFloat) -> Font {
+        if consola { return .custom("ChakraPetch-SemiBold", fixedSize: t) }
+        return hay ? .custom("DMSans-SemiBold", fixedSize: t) : .system(size: t, weight: .semibold)
+    }
+    static func texto(_ t: CGFloat) -> Font {
+        if consola { return .custom("ChakraPetch-Regular", fixedSize: t) }
+        return hay ? .custom("DMSans-Regular", fixedSize: t) : .system(size: t)
+    }
 }
 
 // MARK: - paisaje de noche
@@ -153,10 +166,30 @@ struct FondoNoche: View {
     }
 }
 
-// MARK: - carpeta en pixel art (azul cielo)
+// MARK: - carpeta en pixel art (azul cielo); en la consola, un cartucho (como los proyectos de hugorocha.pe)
 
 struct CarpetaPixel: View {
     var abierta = false
+
+    // 20 × 15 celdas: o = contorno, b = carcasa, r = estrías, l = marco de la etiqueta, e = etiqueta,
+    // a = franja de color de la etiqueta, s = sombra de la carcasa
+    static let cartucho: [String] = [
+        ".oooooooooooooooooo.",
+        "obbbbbbbbbbbbbbbbbbo",
+        "obllllllllllllllllbo",
+        "oblelelelelelelelebo",
+        "obleeeeeeeeeeeeeelbo",
+        "obleaaaaaaaaaaaaelbo",
+        "obleeeeeeeeeeeeeelbo",
+        "obleeeeeeeeeeeeeelbo",
+        "obllllllllllllllllbo",
+        "obbbbbbbbbbbbbbbbbbo",
+        "obbrbrbrbrbrbrbrbbbo",
+        "obbrbrbrbrbrbrbrbbbo",
+        "osssssssssssssssssso",
+        "osssssssssssssssssso",
+        ".oooooooooooooooooo.",
+    ]
 
     // 20 × 15 celdas: t = pestaña/fondo, p = hoja, f = frente, h = brillo del frente, s = sombra (tramado)
     static let mapa: [String] = [
@@ -178,6 +211,34 @@ struct CarpetaPixel: View {
     ]
 
     var body: some View {
+        if Tema.consola { cartuchoVista } else { carpetaVista }
+    }
+
+    private var cartuchoVista: some View {
+        Canvas { ctx, size in
+            let filas = CarpetaPixel.cartucho
+            let oscuro = Tema.p.oscuro
+            let cw = size.width / 20, ch = size.height / CGFloat(filas.count)
+            for (y, fila) in filas.enumerated() {
+                for (x, c) in fila.enumerated() {
+                    let color: Color
+                    switch c {
+                    case "o": color = Color(hex: oscuro ? 0x05020C : 0x2A1A4A)
+                    case "b": color = Color(hex: abierta ? 0x6A3BD6 : 0x4A2A8F)
+                    case "r": color = Color(hex: 0x2F1A63)
+                    case "s": color = Color(hex: 0x351E6E)
+                    case "l": color = Color(hex: 0xD9CCB4)
+                    case "e": color = Color(hex: abierta ? 0xFFFFFF : 0xFFFDF7)
+                    case "a": color = abierta ? Color(hex: 0xE4AE39) : Color(hex: 0x8847FF)
+                    default: continue
+                    }
+                    ctx.fill(Path(CGRect(x: CGFloat(x) * cw, y: CGFloat(y) * ch, width: cw + 0.5, height: ch + 0.5)), with: .color(color))
+                }
+            }
+        }
+    }
+
+    private var carpetaVista: some View {
         Canvas { ctx, size in
             let filas = CarpetaPixel.mapa
             let cw = size.width / 20, ch = size.height / CGFloat(filas.count)

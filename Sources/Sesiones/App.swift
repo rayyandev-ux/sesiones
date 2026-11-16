@@ -12,11 +12,14 @@ final class Delegado: NSObject, NSApplicationDelegate {
 /// `Sesiones --lista` imprime las carpetas y sus sesiones sin abrir ventana.
 func listarYSalir() {
     let r = Datos.todo()
-    for c in r.carpetas {
-        print("\(c.nombre)\(c.auto ? " (automática)" : "") — \(c.sesiones.count)")
-        for s in c.sesiones.prefix(3) { print("   \(hace(s.mtime))  \(s.motor.nombre)  \(s.titulo.prefix(70))") }
+    func imprime(_ c: Carpeta, _ nivel: Int) {
+        let sangria = String(repeating: "   ", count: nivel)
+        print("\(sangria)\(c.nombre) — \(c.total)")
+        for s in c.sesiones.prefix(3) { print("\(sangria)   · \(hace(s.mtime))  \(s.motor.nombre)  \(s.titulo.prefix(60))") }
+        for h in c.hijos { imprime(h, nivel + 1) }
     }
-    print("Total: \(r.total)")
+    for c in r.carpetas { imprime(c, 0) }
+    print("Total: \(r.sesiones.count)")
     exit(0)
 }
 
@@ -25,6 +28,8 @@ struct SesionesApp: App {
     @NSApplicationDelegateAdaptor(Delegado.self) var delegado
     @StateObject private var store = Store()
     @StateObject private var voz = Voz()
+    @StateObject private var uso = Uso()
+    @StateObject private var apariencia = Apariencia()
 
     init() {
         if CommandLine.arguments.contains("--lista") { listarYSalir() }
@@ -34,13 +39,27 @@ struct SesionesApp: App {
     var body: some Scene {
         Window("Sesiones", id: "principal") {
             Raiz()
+                // al cambiar de tema se vuelve a dibujar todo con la paleta nueva
+                .id(apariencia.paleta.clave)
+                .environmentObject(apariencia)
                 .environmentObject(store)
                 .environmentObject(voz)
+                .environmentObject(uso)
                 .frame(minWidth: 780, minHeight: 480)
                 .onAppear {
                     AtajoGlobal.registrar { [weak store] in store?.alternarVentana() }
+                    apariencia.alCambiar = { [weak store] in store?.recolorear() }
                     voz.vigilarFn()
                     voz.alTerminar = { [weak store] texto in store?.escribirDictado(texto) }
+                    // solo para pruebas: SESIONES_FOTO_USO=/ruta.png guarda una foto del panel de uso
+                    if let ruta = ProcessInfo.processInfo.environment["SESIONES_FOTO_USO"] {
+                        let r = ImageRenderer(content: PanelUso().environmentObject(uso).environment(\.colorScheme, .dark))
+                        r.scale = 2
+                        if let img = r.nsImage, let tiff = img.tiffRepresentation,
+                           let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+                            try? png.write(to: URL(fileURLWithPath: ruta))
+                        }
+                    }
                 }
         }
         .windowStyle(.hiddenTitleBar)
@@ -49,7 +68,7 @@ struct SesionesApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("Carpetas") { store.query = ""; store.vista = .inicio }.keyboardShortcut("t")
                 Button("Terminal nueva") { store.nuevaTerminal() }.keyboardShortcut("n")
-                Button("Nueva carpeta…") { store.pideNuevaCarpeta = true }.keyboardShortcut("n", modifiers: [.command, .shift])
+                Button("Nueva carpeta…") { if store.puedeCrearCarpeta { store.pideNuevaCarpeta = true } }.keyboardShortcut("n", modifiers: [.command, .shift])
                 Divider()
                 Button("Buscar") {
                     if case .terminal = store.vista { store.buscarEnTerminal() } else { store.pideBusqueda += 1 }
@@ -62,6 +81,12 @@ struct SesionesApp: App {
             }
             CommandGroup(replacing: .saveItem) {
                 Button("Cerrar pestaña") { store.cerrarActiva() }.keyboardShortcut("w")
+            }
+            CommandMenu("Tema") {
+                Picker("Tema", selection: $apariencia.eleccion) {
+                    ForEach(TemaId.allCases) { t in Text(t.nombre).tag(t) }
+                }
+                .pickerStyle(.inline)
             }
             CommandMenu("Pestañas") {
                 Button("Dividir pantalla") { store.dividir() }.keyboardShortcut("d")

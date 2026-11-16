@@ -207,7 +207,7 @@ struct Dictando: View {
             } else {
                 HStack(spacing: 2) {
                     ForEach(0..<5) { i in
-                        RoundedRectangle(cornerRadius: 1)
+                        Forma(cornerRadius: 1)
                             .fill(Color(hex: 0xFF5A5F))
                             .frame(width: 3, height: 4 + voz.nivel * CGFloat([10, 16, 20, 16, 10][i]))
                     }
@@ -224,8 +224,8 @@ struct Dictando: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .frame(maxWidth: 560, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color(hex: 0x16244A)))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Tema.linea))
+        .background(Forma(cornerRadius: 12).fill(Tema.tarjeta))
+        .overlay(Forma(cornerRadius: 12).stroke(Tema.linea))
         .shadow(color: .black.opacity(0.4), radius: 14, y: 6)
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -239,8 +239,8 @@ struct BotonBarra: ButtonStyle {
             .foregroundColor(activo ? .white : Tema.gris)
             .padding(.horizontal, 9)
             .frame(height: 26)
-            .background(RoundedRectangle(cornerRadius: 7).fill(
-                activo ? Color(hex: 0xE5484D) : Color.white.opacity(configuration.isPressed ? 0.12 : 0.06)))
-            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Tema.linea))
+            .background(Forma(cornerRadius: 7).fill(
+                activo ? Color(hex: 0xE5484D) : Tema.velo(configuration.isPressed ? 0.12 : 0.06)))
+            .overlay(Forma(cornerRadius: 7).stroke(Tema.linea))
     }
 }

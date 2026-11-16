@@ -6,9 +6,12 @@ Una app nativa para Mac que ordena tus sesiones de **Claude Code** y **Codex** e
 
 ## Qué hace
 
-- **Carpetas**: tus sesiones se reparten solas (por defecto, una carpeta por proyecto). Puedes crear carpetas, renombrarlas, arrastrar sesiones entre ellas y archivar las viejas.
+- **Carpetas como en tu Finder**: el árbol copia tu carpeta de proyectos (categorías, proyectos y sus partes), con carpetas que se despliegan. Cada sesión aparece en la carpeta del disco donde vive hoy, aunque hayas movido el proyecto. Puedes archivar las viejas.
 - **La más reciente arriba**: dentro de cada carpeta, ordenadas por la última vez que les hablaste. Arriba de todo, tus 6 sesiones recientes.
-- **Terminales dentro**: doble clic retoma la sesión (`claude --resume` / `codex resume`) en su carpeta. Pestañas a la izquierda, pantalla dividida (⌘D), búsqueda en la terminal (⌘F), arrastrar archivos pega su ruta.
+- **Terminales dentro**: doble clic retoma la sesión (`claude --resume` / `codex resume`) en su carpeta. Pestañas a la izquierda, pantalla dividida (⌘D), búsqueda en la terminal (⌘F), arrastrar archivos pega su ruta, y ⌘V con archivos copiados en el Finder también.
+- **Pestañas con nombre y en grupos**: doble clic en una pestaña (o clic derecho › Renombrar) para ponerle nombre; si es una sesión, el nombre se ve también en sus carpetas. Arma grupos de pestañas que se pliegan, arrastrando pestañas o sesiones encima. Cada pestaña muestra su rama de git.
+- **Uso de Claude**: arriba a la derecha, la ventana de 5 h y la semana; al pasar el mouse, el detalle. Lo lee de `~/.claude/uso-claude/estado.json`, que escribe el status line de [WarpConsumo](https://github.com/Perezhppr/WarpConsumo).
+- **Temas**: *Noche pixel* (el original) o *Consola* (morado, cartuchos y letras pixel, crema de día y morado de noche según la hora). Se elige con el ícono de paleta arriba de la barra lateral o en el menú Tema.
 - **Te avisa**: cada pestaña muestra si el agente está trabajando, si terminó o si te pide permiso, con notificación de macOS e insignia en el Dock.
 - **Dictado**: mantén **fn** (o toca *Hablar*), habla y suelta: el texto se escribe en la terminal. Usa el reconocimiento de voz de Apple, en tu Mac.
 - **Recuerda tus pestañas** al cerrar y abrir (vuelven dormidas: arrancan cuando las abres).
@@ -31,30 +34,25 @@ security find-identity -v -p codesigning   # copia el hash de tu certificado
 echo TU_HASH > .firma
 ```
 
-## Carpetas y reglas
+## Carpetas
 
-Todo vive en `~/.sesiones/carpetas.json` (se crea al abrir la app por primera vez):
+El árbol sale de tu disco. En `~/.sesiones/carpetas.json` (se crea al abrir la app por primera vez) solo dices cuál es tu carpeta de proyectos:
 
 ```json
 {
-  "base": "~/Proyectos",
-  "porProyecto": true,
-  "carpetas": [
-    { "nombre": "Clientes", "rutas": ["/clientes/"], "palabras": ["cotizaci[oó]n", "\\bcrm\\b"], "dir": "~/Proyectos/clientes" },
-    { "nombre": "Otros", "rutas": [], "palabras": [] }
-  ]
+  "base": "~/Desktop/Proyectos",
+  "pruebas": { "nombre": "Pruebas", "rutas": ["/private/tmp", "/tmp/"] }
 }
 ```
 
-- `rutas`: si la carpeta de trabajo de la sesión contiene ese texto, va directo a esa carpeta.
-- `palabras`: expresiones regulares que se buscan en el título y tus primeros mensajes; gana la carpeta con más coincidencias. Con `"prioridad": true` basta una.
-- `dir`: dónde arrancan las sesiones nuevas de esa carpeta (si no hay, se usa `base/<nombre>`).
-- `porProyecto`: lo que no cae en ninguna carpeta se agrupa por proyecto. Con `false` va a la última carpeta (*Otros*).
-- `manual` y `archivo` los llena la app cuando mueves o archivas.
+- `base`: tu carpeta de proyectos. Se muestran sus carpetas y las de dentro, tal cual; y un tercer nivel dentro de las que no son un repositorio (un cliente o producto con `web`, `ios`, `android`).
+- Cada sesión va a la carpeta donde se abrió. Si moviste un proyecto y te llevaste su historial de `~/.claude/projects`, la app encuentra la carpeta nueva y la retoma ahí.
+- Al final, aparte: **Sueltas** (abiertas directo en `base`), **Otros lugares** (fuera de `base`), **Ya no existen** (su carpeta se movió o se borró), **Pruebas** (`pruebas.rutas`) y **Archivo** (`archivo`, lo llena la app).
+- *Nueva carpeta* crea una carpeta de verdad en el disco, dentro de la que estás viendo.
 
 ## Desde la terminal
 
-`terminal/sesiones.py` es la misma idea en modo texto (sin dependencias, Python 3), útil como pantalla de inicio de Warp u otra terminal:
+`terminal/sesiones.py` es la versión en modo texto (sin dependencias, Python 3), útil como pantalla de inicio de Warp u otra terminal. Todavía reparte las sesiones a la manera original (una carpeta por proyecto y reglas `carpetas` de `carpetas.json`), no como árbol:
 
 ```bash
 ln -s "$PWD/terminal/sesiones.py" ~/.local/bin/sesiones

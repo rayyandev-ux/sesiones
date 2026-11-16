@@ -11,6 +11,13 @@ enum Vista: Hashable {
     case terminal(UUID)
 }
 
+/// Un grupo de pestañas, como los de Warp: tiene nombre y se pliega.
+struct Grupo: Identifiable, Equatable {
+    let id: UUID
+    var nombre: String
+    var plegado = false
+}
+
 /// Lo que está haciendo el agente dentro de una terminal.
 enum Estado {
     case nada, trabajando, listo, permiso
@@ -18,8 +25,14 @@ enum Estado {
 
 @MainActor
 final class Store: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
+    /// el árbol: las carpetas de primer nivel (cada una trae las suyas dentro)
     @Published var carpetas: [Carpeta] = []
+    @Published var todas: [Sesion] = []
+    /// tu carpeta de proyectos: de ahí sale el árbol
+    @Published var raiz = Datos.carpetaBase()
     @Published var total = 0
+    /// carpetas desplegadas en la barra lateral
+    @Published var desplegadas: Set<String> = [] { didSet { UserDefaults.standard.set(Array(desplegadas), forKey: "desplegadas") } }
     @Published var vista: Vista = .inicio { didSet { if vista != oldValue { cambioDeVista = Date(); alMostrar() } } }
     @Published var carpetaSel: String?
     @Published var sesionSel: String?
@@ -30,6 +43,14 @@ final class Store: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
         }
     }
     @Published var terminales: [Term] = []
+    @Published var grupos: [Grupo] = []
+    /// lo que se está renombrando en la barra lateral: "term:<uuid>", "grupo:<uuid>" o "sesion:<id>"
+    @Published var editando: String?
+    /// nombres que les pusiste a las sesiones (id → nombre)
+    @Published var nombres: [String: String] = [:]
+    /// se instaló una versión nueva de la app encima de esta: se ofrece reiniciar
+    @Published var hayVersionNueva = false
+    private let fechaDelPrograma = Store.fechaDelPrograma()
     /// terminal mostrada a la derecha cuando la pantalla está dividida
     @Published var lado: UUID?
     @Published var aviso: String?
@@ -42,16 +63,20 @@ final class Store: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
     private var cargando = false
     private var otraVez = false
     private var idsConocidos: Set<String> = []
-    private var pendientes: [(cwd: String, carpeta: String?, desde: Date, term: UUID)] = []
+    private var pendientes: [(cwd: String, desde: Date, term: UUID)] = []
     private var timers: [Timer] = []
     private var saliendo = false
     private let notificaciones = Bundle.main.bundleIdentifier != nil
     private var registro: String?
+    private var fotoPedida = false
+    private var carpetaDePrueba: String?
+    private var pestanaDePruebaHecha = false
 
     override init() {
         super.init()
         let f = UserDefaults.standard.double(forKey: "tamFuente")
         tamFuente = f > 0 ? CGFloat(f) : 13
+        desplegadas = Set(UserDefaults.standard.stringArray(forKey: "desplegadas") ?? [])
         recargar()
         restaurar()
         timers.append(Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
@@ -60,6 +85,9 @@ final class Store: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
         timers.append(Timer.scheduledTimer(withTimeInterval: 0.8, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.vigilar() }
         })
+        timers.append(Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.leerRamas(); self?.revisarVersion() }
+        })
         let nc = NotificationCenter.default
         nc.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.recargar(); self?.alMostrar() }
@@ -67,7 +95,14 @@ final class Store: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
         nc.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.saliendo = true }
         }
-        if let c = ProcessInfo.processInfo.environment["SESIONES_CARPETA"] { vista = .carpeta(c) } // solo para pruebas
+        carpetaDePrueba = ProcessInfo.processInfo.environment["SESIONES_CARPETA"] // solo para pruebas: abre esa carpeta
+        editando = ProcessInfo.processInfo.environment["SESIONES_EDITAR"] // solo para pruebas: "term:…", "grupo:…"
+        if ProcessInfo.processInfo.environment["SESIONES_REINICIAR"] != nil { // solo para pruebas: reinicia a los 3 s
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                if let t = self?.terminales.last { self?.mostrar(t) }
+                self?.reiniciar()
+            }
+        }
         // solo para pruebas: SESIONES_PRUEBA abre una terminal con ese comando y anota los cambios de estado
         if let cmd = ProcessInfo.processInfo.environment["SESIONES_PRUEBA"] {
             let t = crear(cwd: Datos.home, motor: nil, sesionId: nil, titulo: "prueba")
@@ -93,58 +128,93 @@ final class Store: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
         }
     }
 
-    private func aplica(_ r: (carpetas: [Carpeta], total: Int, ids: Set<String>)) {
+    private func aplica(_ r: (carpetas: [Carpeta], sesiones: [Sesion], raiz: String, nombres: [String: String])) {
         cargando = false
-        // una sesión nueva abierta desde la app: se le pone su id a la pestaña y se queda en su carpeta
+        if raiz != r.raiz { raiz = r.raiz }
+        if nombres != r.nombres { nombres = r.nombres }
+        let ids = Set(r.sesiones.map(\.id))
+        // una sesión nueva abierta desde la app: se le pone su id a la pestaña
         if !pendientes.isEmpty && !idsConocidos.isEmpty {
-            let nuevas = r.ids.subtracting(idsConocidos)
-            var mover: [(String, String)] = []
-            for s in r.carpetas.flatMap(\.sesiones) where nuevas.contains(s.id) {
+            for s in r.sesiones where !idsConocidos.contains(s.id) {
                 if let k = pendientes.firstIndex(where: { $0.cwd == s.cwd && s.mtime >= $0.desde.addingTimeInterval(-5) }) {
                     let p = pendientes.remove(at: k)
                     if let t = terminales.first(where: { $0.id == p.term }), t.sesionId == nil {
                         t.sesionId = s.id
                         t.titulo = s.titulo
+                        // si ya le habías puesto nombre a la pestaña, pasa a ser el nombre de la sesión
+                        if let n = t.nombre {
+                            Datos.nombrar(s.id, n)
+                            nombres[s.id] = n
+                            t.titulo = n
+                            t.nombre = nil
+                        }
                         guardarAbiertas()
                     }
-                    if let c = p.carpeta, s.carpeta != c { mover.append((s.id, c)) }
                 }
             }
             pendientes.removeAll { Date().timeIntervalSince($0.desde) > 3600 }
-            if !mover.isEmpty {
-                for (id, c) in mover { _ = Datos.mover([id], a: c) }
-                idsConocidos = r.ids
-                recargar()
-                return
+        }
+        idsConocidos = ids
+        carpetas = r.carpetas
+        todas = r.sesiones
+        total = r.sesiones.count
+        // los títulos que Claude pone a las sesiones nuevas llegan después: se actualizan en las pestañas
+        let porId = Dictionary(r.sesiones.map { ($0.id, $0.titulo) }, uniquingKeysWith: { a, _ in a })
+        for t in terminales { if let id = t.sesionId, let tit = porId[id], tit != t.titulo { t.titulo = tit } }
+        if carpetaSel == nil { carpetaSel = carpetas.first?.id }
+        if case .carpeta(let n) = vista, carpeta(n) == nil { vista = .inicio }
+        if let c = carpetaDePrueba { carpetaDePrueba = nil; if carpeta(c) != nil { abrirCarpeta(c) } }
+        // solo para pruebas: SESIONES_PESTANA=n muestra la pestaña n (desde 1)
+        if !pestanaDePruebaHecha, let n = ProcessInfo.processInfo.environment["SESIONES_PESTANA"].flatMap(Int.init) {
+            pestanaDePruebaHecha = true
+            irA(n - 1)
+        }
+        if otraVez { otraVez = false; recargar() }
+        // solo para pruebas: SESIONES_FOTO=/ruta.png guarda una foto de la ventana y cierra la app
+        if let ruta = ProcessInfo.processInfo.environment["SESIONES_FOTO"], !fotoPedida {
+            fotoPedida = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                if let v = NSApp.windows.first(where: { $0.canBecomeMain })?.contentView,
+                   let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) {
+                    v.cacheDisplay(in: v.bounds, to: rep)
+                    try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: ruta))
+                }
+                exit(0)
             }
         }
-        idsConocidos = r.ids
-        carpetas = r.carpetas
-        total = r.total
-        // los títulos que Claude pone a las sesiones nuevas llegan después: se actualizan en las pestañas
-        let porId = Dictionary(r.carpetas.flatMap(\.sesiones).map { ($0.id, $0.titulo) }, uniquingKeysWith: { a, _ in a })
-        for t in terminales { if let id = t.sesionId, let tit = porId[id], tit != t.titulo { t.titulo = tit } }
-        if carpetaSel == nil { carpetaSel = carpetas.first?.nombre }
-        if case .carpeta(let n) = vista, !carpetas.contains(where: { $0.nombre == n }) { vista = .inicio }
-        if otraVez { otraVez = false; recargar() }
     }
 
-    var todas: [Sesion] { carpetas.flatMap(\.sesiones).sorted { $0.mtime > $1.mtime } }
+    func carpeta(_ id: String) -> Carpeta? {
+        for c in carpetas { if let x = c.buscar(id) { return x } }
+        return nil
+    }
+
+    /// La carpeta que contiene a esta (nil si está en el primer nivel).
+    func padre(de id: String) -> Carpeta? {
+        func busca(_ c: Carpeta) -> Carpeta? {
+            if c.hijos.contains(where: { $0.id == id }) { return c }
+            for h in c.hijos { if let x = busca(h) { return x } }
+            return nil
+        }
+        for c in carpetas { if let x = busca(c) { return x } }
+        return nil
+    }
 
     var recientes: [Sesion] {
-        Array(carpetas.filter { $0.nombre != "Pruebas" && $0.nombre != "Archivo" }
-            .flatMap(\.sesiones).sorted { $0.mtime > $1.mtime }.prefix(6))
+        let aparte = Set(carpetas.filter { $0.grupo && $0.ruta == nil && $0.id != Datos.nFuera }.flatMap(\.todas).map(\.id))
+        return Array(todas.lazy.filter { !aparte.contains($0.id) }.prefix(6))
     }
 
-    func sesiones(de nombre: String) -> [Sesion] {
-        carpetas.first { $0.nombre == nombre }?.sesiones ?? []
+    /// Las sesiones de una carpeta y de todo lo que tiene dentro, la más reciente arriba.
+    func sesiones(de id: String) -> [Sesion] {
+        (carpeta(id)?.todas ?? []).sorted { $0.mtime > $1.mtime }
     }
 
     var resultados: [Sesion] {
         let palabras = query.lowercased().split(separator: " ").map(String.init)
         guard !palabras.isEmpty else { return [] }
         return todas.filter { s in
-            let t = (s.titulo + " " + s.prompts.joined(separator: " ") + " " + s.cwd + " " + s.carpeta + " " + s.motor.rawValue).lowercased()
+            let t = (s.titulo + " " + s.prompts.joined(separator: " ") + " " + s.cwd + " " + s.motor.rawValue).lowercased()
             return palabras.allSatisfy { t.contains($0) }
         }
     }
@@ -161,37 +231,52 @@ final class Store: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
 
     // MARK: carpetas
 
-    func abrirCarpeta(_ n: String) {
-        carpetaSel = n
-        sesionSel = sesiones(de: n).first?.id
-        vista = .carpeta(n)
+    func abrirCarpeta(_ id: String) {
+        carpetaSel = id
+        sesionSel = sesiones(de: id).first?.id
+        vista = .carpeta(id)
+        // en la barra lateral se despliega el camino hasta ella
+        var arriba = padre(de: id)
+        while let p = arriba { desplegadas.insert(p.id); arriba = padre(de: p.id) }
+        if carpeta(id)?.hijos.isEmpty == false { desplegadas.insert(id) }
     }
 
+    func desplegar(_ id: String) {
+        if desplegadas.contains(id) { desplegadas.remove(id) } else { desplegadas.insert(id) }
+    }
+
+    var nombreRaiz: String { (raiz as NSString).lastPathComponent }
+
+    /// La carpeta del disco donde se crearía una carpeta nueva: la que estás viendo, o tu carpeta de proyectos.
+    var dondeCrear: String {
+        if case .carpeta(let id) = vista, let c = carpeta(id), let r = c.ruta { return r }
+        return raiz
+    }
+
+    /// Solo se crean carpetas donde el árbol las va a mostrar: en tu carpeta de proyectos, dentro de una de sus
+    /// carpetas, o un nivel más adentro si esa no es un repositorio.
+    var puedeCrearCarpeta: Bool {
+        guard case .carpeta(let id) = vista else { return vista == .inicio }
+        guard let c = carpeta(id), let r = c.ruta, !c.grupo, r.hasPrefix(raiz + "/") else { return false }
+        let nivel = r.dropFirst(raiz.count).split(separator: "/").count
+        return nivel == 1 || (nivel == 2 && !FileManager.default.fileExists(atPath: r + "/.git"))
+    }
+
+    /// Crea una carpeta de verdad en el disco, dentro de la que estás viendo.
     func crearCarpeta(_ nombre: String) {
-        if let e = Datos.crearCarpeta(nombre) { aviso = e } else { carpetaSel = Datos.limpia(nombre); recargar() }
-    }
-
-    func renombrar(_ viejo: String, _ nuevo: String) {
-        if let e = Datos.renombrar(viejo, nuevo) { aviso = e; return }
-        let n = Datos.limpia(nuevo)
-        if carpetaSel == viejo { carpetaSel = n }
-        if vista == .carpeta(viejo) { vista = .carpeta(n) }
+        guard !Datos.limpia(nombre).isEmpty else { aviso = "Ponle un nombre"; return }
+        let dir = dondeCrear + "/" + Datos.nombreEnDisco(nombre)
+        if FileManager.default.fileExists(atPath: dir) { aviso = "Ya existe una carpeta con ese nombre"; return }
+        do { try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: false) }
+        catch { aviso = "No pude crear \(Datos.corta(dir)): \(error.localizedDescription)"; return }
+        if case .carpeta(let id) = vista { desplegadas.insert(id) }
         recargar()
     }
 
-    func borrar(_ nombre: String) {
-        if let e = Datos.borrar(nombre) { aviso = e; return }
-        if vista == .carpeta(nombre) { vista = .inicio }
-        recargar()
-    }
-
+    /// Soltar sesiones sobre "Archivo" las archiva.
     func mover(_ ids: [String], a carpeta: String) {
-        if carpeta == "Archivo" { archivar(ids, true); return }
-        if Datos.mover(ids, a: carpeta) != nil {
-            // carpeta automática (por proyecto): se vuelve una carpeta tuya y la sesión entra
-            if let e = Datos.crearCarpeta(carpeta) ?? Datos.mover(ids, a: carpeta) { aviso = e; return }
-        }
-        recargar()
+        let sesiones = ids.filter { !$0.hasPrefix("term:") }
+        if carpeta == Datos.nArchivo, !sesiones.isEmpty { archivar(sesiones, true) }
     }
 
     func archivar(_ ids: [String], _ si: Bool) {
@@ -199,46 +284,28 @@ final class Store: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
         recargar()
     }
 
-    func mueveCarpeta(_ nombre: String, antesDe destino: String) {
-        Datos.mueveCarpeta(nombre, antesDe: destino)
-        recargar()
-    }
-
     // MARK: terminales
 
     func retomar(_ s: Sesion) {
         if let t = terminales.first(where: { $0.sesionId == s.id }) { mostrar(t); return }
-        guard FileManager.default.fileExists(atPath: s.cwd) else { aviso = "Esa carpeta ya no existe: \(s.cwd)"; return }
+        guard FileManager.default.fileExists(atPath: s.cwd) else {
+            aviso = "La carpeta de esta sesión ya no existe (se movió o se borró): \(Datos.corta(s.cwd))"
+            return
+        }
         mostrar(crear(cwd: s.cwd, motor: s.motor, sesionId: s.id, titulo: s.titulo))
     }
 
-    func nuevaSesion(en cwd: String, carpeta: String?, motor: Motor = .claude) {
+    func nuevaSesion(en cwd: String, motor: Motor = .claude) {
         let t = crear(cwd: cwd, motor: motor, sesionId: nil, titulo: "\(motor.nombre) · " + (cwd as NSString).lastPathComponent)
-        pendientes.append((cwd, carpeta, Date(), t.id))
+        pendientes.append((cwd, Date(), t.id))
         mostrar(t)
     }
 
-    /// Dónde arrancan las sesiones nuevas de esta carpeta: la que elegiste, la de su sesión más reciente,
-    /// o (si está vacía) <base>/<nombre> (base = "base" en carpetas.json, por defecto ~/Proyectos).
-    func dirDeTrabajo(_ carpeta: String) -> (dir: String, nueva: Bool) {
-        if let d = Datos.dirGuardado(carpeta) { return (d, !FileManager.default.fileExists(atPath: d)) }
-        if let s = sesiones(de: carpeta).first(where: { FileManager.default.fileExists(atPath: $0.cwd) }) { return (s.cwd, false) }
-        let d = Datos.carpetaBase() + "/" + Datos.nombreEnDisco(carpeta)
-        return (d, !FileManager.default.fileExists(atPath: d))
-    }
-
-    func sesionAqui(_ carpeta: String, motor: Motor = .claude) {
-        let (dir, nueva) = dirDeTrabajo(carpeta)
-        if nueva {
-            do { try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true) }
-            catch { aviso = "No pude crear \(dir): \(error.localizedDescription)"; return }
-        }
-        if Datos.dirGuardado(carpeta) == nil && sesiones(de: carpeta).isEmpty { Datos.ponDir(carpeta, dir) }
-        nuevaSesion(en: dir, carpeta: carpeta, motor: motor)
-    }
-
-    func cambiarDir(_ carpeta: String) {
-        if let d = elegirDirectorio(dirDeTrabajo(carpeta).dir) { Datos.ponDir(carpeta, d); recargar(); objectWillChange.send() }
+    /// Abre una sesión nueva en la carpeta del disco de esta carpeta.
+    func sesionAqui(_ id: String, motor: Motor = .claude) {
+        guard let dir = carpeta(id)?.ruta else { return }
+        guard FileManager.default.fileExists(atPath: dir) else { aviso = "Esa carpeta ya no existe: \(Datos.corta(dir))"; return }
+        nuevaSesion(en: dir, motor: motor)
     }
 
     func nuevaTerminal(en cwd: String? = nil) {
@@ -246,8 +313,12 @@ final class Store: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
     }
 
     @discardableResult
-    private func crear(cwd: String, motor: Motor?, sesionId: String?, titulo: String, dormida: Bool = false) -> Term {
+    private func crear(cwd: String, motor: Motor?, sesionId: String?, titulo: String, dormida: Bool = false,
+                       grupo: UUID? = nil, nombre: String? = nil) -> Term {
         let t = Term(cwd: cwd, motor: motor, sesionId: sesionId, titulo: titulo, store: self)
+        t.grupo = grupo
+        t.nombre = nombre
+        t.rama = Datos.rama(de: cwd)
         terminales.append(t)
         if !dormida { t.iniciar() }
         guardarAbiertas()
@@ -256,8 +327,171 @@ final class Store: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
 
     func mostrar(_ t: Term) {
         if lado == t.id, let a = terminalActiva { lado = a.id }
+        // si está en un grupo plegado, el grupo se abre
+        if let g = t.grupo, let k = grupos.firstIndex(where: { $0.id == g }), grupos[k].plegado {
+            grupos[k].plegado = false
+            guardarAbiertas()
+        }
         vista = .terminal(t.id)
         alMostrar()
+    }
+
+    // MARK: pestañas en el orden de la barra lateral (primero los grupos, luego las sueltas)
+
+    var ordenadas: [Term] {
+        grupos.flatMap { g in terminales.filter { $0.grupo == g.id } } + sueltas
+    }
+
+    var sueltas: [Term] {
+        let ids = Set(grupos.map(\.id))
+        return terminales.filter { $0.grupo == nil || !ids.contains($0.grupo!) }
+    }
+
+    func pestanas(de g: UUID) -> [Term] { terminales.filter { $0.grupo == g } }
+
+    // MARK: renombrar
+
+    /// Nombre de una pestaña. Si es una sesión, el nombre es de la sesión: se ve también en sus carpetas y vuelve
+    /// al retomarla. nil o vacío quita el nombre.
+    func renombrar(_ t: Term, _ nombre: String?) {
+        let limpio = Datos.limpia(nombre ?? "")
+        if let id = t.sesionId {
+            nombrarSesion(id, limpio.isEmpty ? nil : limpio)
+        } else {
+            t.nombre = limpio.isEmpty ? nil : limpio
+        }
+        guardarAbiertas()
+    }
+
+    func nombrarSesion(_ id: String, _ nombre: String?) {
+        Datos.nombrar(id, nombre)
+        nombres[id] = nombre
+        if let nombre {
+            for t in terminales where t.sesionId == id { t.titulo = nombre }
+        }
+        recargar() // sin nombre, vuelve el título que le puso Claude
+    }
+
+    func tieneNombre(_ t: Term) -> Bool { t.sesionId.map { nombres[$0] != nil } ?? (t.nombre != nil) }
+
+    /// Termina de renombrar y devuelve el cursor a la terminal.
+    func finEdicion() {
+        editando = nil
+        if let t = terminalActiva { DispatchQueue.main.async { t.vista.window?.makeFirstResponder(t.vista) } }
+    }
+
+    // MARK: grupos de pestañas
+
+    /// Grupo nuevo (con esta pestaña dentro, si se da una) y se queda escribiendo su nombre.
+    @discardableResult
+    func nuevoGrupo(con t: Term? = nil) -> UUID {
+        let usados = Set(grupos.map(\.nombre))
+        var n = 1
+        while usados.contains("Grupo \(n)") { n += 1 }
+        let g = Grupo(id: UUID(), nombre: "Grupo \(n)")
+        grupos.append(g)
+        if let t { t.grupo = g.id }
+        editando = "grupo:" + g.id.uuidString
+        guardarAbiertas()
+        return g.id
+    }
+
+    func renombrarGrupo(_ id: UUID, _ nombre: String) {
+        let limpio = Datos.limpia(nombre)
+        guard !limpio.isEmpty, let k = grupos.firstIndex(where: { $0.id == id }) else { return }
+        grupos[k].nombre = limpio
+        guardarAbiertas()
+    }
+
+    func plegar(_ id: UUID) {
+        guard let k = grupos.firstIndex(where: { $0.id == id }) else { return }
+        grupos[k].plegado.toggle()
+        guardarAbiertas()
+    }
+
+    func mover(_ t: Term, aGrupo g: UUID?) {
+        guard t.grupo != g else { return }
+        objectWillChange.send()
+        t.grupo = g
+        guardarAbiertas()
+    }
+
+    /// Lo que se suelta sobre un grupo: una pestaña ("term:<uuid>") entra al grupo; una sesión de las carpetas se abre ahí.
+    func soltar(_ items: [String], enGrupo g: UUID?) -> Bool {
+        var algo = false
+        for i in items {
+            if i.hasPrefix("term:"), let t = terminales.first(where: { $0.id.uuidString == String(i.dropFirst(5)) }) {
+                mover(t, aGrupo: g); algo = true
+            } else if let s = todas.first(where: { $0.id == i }) {
+                if let t = terminales.first(where: { $0.sesionId == s.id }) {
+                    mover(t, aGrupo: g)
+                } else if FileManager.default.fileExists(atPath: s.cwd) {
+                    crear(cwd: s.cwd, motor: s.motor, sesionId: s.id, titulo: s.titulo, dormida: true, grupo: g)
+                }
+                algo = true
+            }
+        }
+        return algo
+    }
+
+    /// Saca las pestañas del grupo (siguen abiertas) y borra el grupo.
+    func desagrupar(_ id: UUID) {
+        objectWillChange.send()
+        for t in terminales where t.grupo == id { t.grupo = nil }
+        grupos.removeAll { $0.id == id }
+        guardarAbiertas()
+    }
+
+    func cerrarGrupo(_ id: UUID) {
+        for t in pestanas(de: id) { cerrar(t) }
+        grupos.removeAll { $0.id == id }
+        guardarAbiertas()
+    }
+
+    /// Terminal nueva dentro del grupo, en la carpeta de su última pestaña.
+    func nuevaTerminal(enGrupo g: UUID) {
+        let cwd = pestanas(de: g).last?.cwd ?? Datos.home
+        if let k = grupos.firstIndex(where: { $0.id == g }) { grupos[k].plegado = false }
+        mostrar(crear(cwd: cwd, motor: nil, sesionId: nil, titulo: "Terminal", grupo: g))
+    }
+
+    // MARK: actualizar la app sin instalar otra copia
+
+    private static func fechaDelPrograma() -> Date? {
+        guard let ruta = Bundle.main.executablePath else { return nil }
+        return (try? FileManager.default.attributesOfItem(atPath: ruta))?[.modificationDate] as? Date
+    }
+
+    /// La app nueva se copia encima de esta en /Applications; esta sigue corriendo con el programa viejo hasta reiniciar.
+    private func revisarVersion() {
+        guard !hayVersionNueva, let antes = fechaDelPrograma, let ahora = Store.fechaDelPrograma(), ahora > antes else { return }
+        hayVersionNueva = true
+    }
+
+    /// Cierra y vuelve a abrir la app. Las pestañas vuelven y la que estabas viendo se retoma sola.
+    func reiniciar() {
+        guardarAbiertas()
+        UserDefaults.standard.set(true, forKey: "reabrirActiva")
+        UserDefaults.standard.synchronize()
+        saliendo = true
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        // espera a que esta copia termine de cerrarse y abre la app otra vez
+        p.arguments = ["-c", "while kill -0 \(getpid()) 2>/dev/null; do sleep 0.2; done; open \"$0\"", Bundle.main.bundlePath]
+        do { try p.run() } catch { aviso = "No pude reiniciar: \(error.localizedDescription). Ciérrala con ⌘Q y ábrela."; saliendo = false; return }
+        NSApp.terminate(nil)
+    }
+
+    /// cambió el tema: las terminales abiertas toman los colores nuevos
+    func recolorear() {
+        for t in terminales { t.colores() }
+    }
+
+    private func leerRamas() {
+        for t in terminales {
+            let r = Datos.rama(de: t.cwd)
+            if r != t.rama { t.rama = r }
+        }
     }
 
     var terminalActiva: Term? {
@@ -279,16 +513,21 @@ final class Store: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
     func cerrar(_ t: Term) {
         t.terminar()
         guard let k = terminales.firstIndex(where: { $0 === t }) else { return }
+        var orden = ordenadas
+        let j = orden.firstIndex { $0 === t } ?? 0
+        orden.removeAll { $0 === t }
         terminales.remove(at: k)
+        if editando == "term:" + t.id.uuidString { editando = nil }
         if lado == t.id { lado = nil }
         if vista == .terminal(t.id) {
             if let l = lado, let lt = terminales.first(where: { $0.id == l }) {
                 lado = nil
                 vista = .terminal(lt.id)
-            } else if terminales.isEmpty {
+            } else if orden.isEmpty {
                 vista = .inicio
             } else {
-                vista = .terminal(terminales[min(k, terminales.count - 1)].id)
+                // la de al lado en la barra lateral
+                mostrar(orden[min(j, orden.count - 1)])
             }
         }
         guardarAbiertas()
@@ -305,13 +544,15 @@ final class Store: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
     }
 
     func pestana(_ paso: Int) {
-        guard !terminales.isEmpty else { return }
-        let k = terminales.firstIndex { $0 === terminalActiva } ?? (paso > 0 ? -1 : 0)
-        mostrar(terminales[(k + paso + terminales.count) % terminales.count])
+        let orden = ordenadas
+        guard !orden.isEmpty else { return }
+        let k = orden.firstIndex { $0 === terminalActiva } ?? (paso > 0 ? -1 : 0)
+        mostrar(orden[(k + paso + orden.count) % orden.count])
     }
 
     func irA(_ n: Int) {
-        if n < terminales.count { mostrar(terminales[n]) }
+        let orden = ordenadas
+        if n < orden.count { mostrar(orden[n]) }
     }
 
     func fuente(_ delta: CGFloat) {
@@ -416,7 +657,7 @@ final class Store: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
         guard notificaciones else { return }
         let c = UNMutableNotificationContent()
         c.title = permiso ? "Necesita tu permiso" : "\(t.motor?.nombre ?? "La terminal") terminó"
-        c.body = t.titulo
+        c.body = t.etiqueta
         c.sound = .default
         c.userInfo = ["term": t.id.uuidString]
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: t.id.uuidString, content: c, trigger: nil))
@@ -439,24 +680,46 @@ final class Store: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
 
     // MARK: recordar las pestañas abiertas
 
-    private func guardarAbiertas() {
+    func guardarAbiertas() {
         guard !saliendo else { return }
         let lista: [[String: String]] = terminales.map {
-            ["motor": $0.motor?.rawValue ?? "", "sesion": $0.sesionId ?? "", "cwd": $0.cwd, "titulo": $0.titulo]
+            ["motor": $0.motor?.rawValue ?? "", "sesion": $0.sesionId ?? "", "cwd": $0.cwd, "titulo": $0.titulo,
+             "nombre": $0.nombre ?? "", "grupo": $0.grupo?.uuidString ?? ""]
         }
         UserDefaults.standard.set(lista, forKey: "abiertas")
+        UserDefaults.standard.set(terminalActiva.flatMap { a in terminales.firstIndex { $0 === a } } ?? -1, forKey: "activa")
+        UserDefaults.standard.set(grupos.map { ["id": $0.id.uuidString, "nombre": $0.nombre, "plegado": $0.plegado ? "1" : ""] },
+                                  forKey: "grupos")
     }
 
-    /// Al abrir la app vuelven tus pestañas, dormidas: cada una arranca cuando la abres (no gasta RAM antes).
+    /// Al abrir la app vuelven tus pestañas y tus grupos, dormidas: cada una arranca cuando la abres (no gasta RAM antes).
     private func restaurar() {
-        guard let lista = UserDefaults.standard.array(forKey: "abiertas") as? [[String: String]] else { return }
+        let gs = UserDefaults.standard.array(forKey: "grupos") as? [[String: String]] ?? []
+        grupos = gs.compactMap { d in
+            guard let id = d["id"].flatMap(UUID.init(uuidString:)) else { return nil }
+            return Grupo(id: id, nombre: d["nombre"] ?? "Grupo", plegado: d["plegado"] == "1")
+        }
+        guard var lista = UserDefaults.standard.array(forKey: "abiertas") as? [[String: String]] else { return }
+        for k in lista.indices { lista[k]["i"] = String(k) }
+        var restauradas: [String: Term] = [:]
+        // se lee antes de crear las pestañas, porque cada una vuelve a guardar la lista
+        let reabrir = UserDefaults.standard.bool(forKey: "reabrirActiva")
+        let activa = String(UserDefaults.standard.integer(forKey: "activa"))
+        UserDefaults.standard.removeObject(forKey: "reabrirActiva")
+        defer {
+            // después de un reinicio por actualización, la pestaña que estabas viendo vuelve despierta
+            if reabrir, let t = restauradas[activa] { mostrar(t) }
+        }
         for d in lista {
             let cwd = d["cwd"] ?? Datos.home
             guard FileManager.default.fileExists(atPath: cwd) else { continue }
             let motor = Motor(rawValue: d["motor"] ?? "")
             let sesion = d["sesion"].flatMap { $0.isEmpty ? nil : $0 }
             if motor != nil && sesion == nil { continue } // sesión nueva que nunca llegó a guardarse
-            crear(cwd: cwd, motor: motor, sesionId: sesion, titulo: d["titulo"] ?? "Terminal", dormida: true)
+            let grupo = d["grupo"].flatMap(UUID.init(uuidString:)).flatMap { g in grupos.contains { $0.id == g } ? g : nil }
+            let t = crear(cwd: cwd, motor: motor, sesionId: sesion, titulo: d["titulo"] ?? "Terminal", dormida: true,
+                          grupo: grupo, nombre: d["nombre"].flatMap { $0.isEmpty ? nil : $0 })
+            restauradas[d["i"] ?? ""] = t
         }
     }
 
@@ -513,16 +776,31 @@ final class VistaTerminal: LocalProcessTerminalView {
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        guard let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
-              !urls.isEmpty else { return false }
-        let texto = urls.map { u -> String in
+        guard let rutas = VistaTerminal.rutas(sender.draggingPasteboard) else { return false }
+        send(txt: rutas + " ")
+        window?.makeFirstResponder(self)
+        return true
+    }
+
+    /// ⌘V con archivos o carpetas copiados en el Finder pega su ruta completa, como Warp
+    /// (el Finder también deja el nombre como texto, que es lo único que pegaba antes).
+    override func paste(_ sender: Any) {
+        if let rutas = VistaTerminal.rutas(NSPasteboard.general) {
+            send(txt: rutas)
+        } else {
+            super.paste(sender)
+        }
+    }
+
+    /// Las rutas de los archivos del portapapeles, listas para la terminal (con comillas si hace falta).
+    static func rutas(_ pb: NSPasteboard) -> String? {
+        guard let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
+              !urls.isEmpty else { return nil }
+        return urls.map { u -> String in
             let p = u.path
             let seguro = p.allSatisfy { $0.isLetter || $0.isNumber || "/._-~+@".contains($0) }
             return seguro ? p : "'" + p.replacingOccurrences(of: "'", with: "'\\''") + "'"
-        }.joined(separator: " ") + " "
-        send(txt: texto)
-        window?.makeFirstResponder(self)
-        return true
+        }.joined(separator: " ")
     }
 }
 
@@ -533,6 +811,10 @@ final class Term: NSObject, ObservableObject, Identifiable, LocalProcessTerminal
     let motor: Motor?
     @Published var sesionId: String?
     @Published var titulo: String
+    /// el nombre que le pusiste a la pestaña (solo en terminales sin sesión; las sesiones guardan el suyo)
+    @Published var nombre: String?
+    @Published var grupo: UUID?
+    @Published var rama: String?
     @Published var cwd: String
     @Published var estado: Estado = .nada
     @Published var sinVer = false
@@ -544,7 +826,18 @@ final class Term: NSObject, ObservableObject, Identifiable, LocalProcessTerminal
     var desde = Date()
     private var vivo = true
 
-    static let fondo = NSColor(hex: 0x0E1730)
+    /// la terminal es "la tele": el fondo lo pone el tema
+    static var fondo: NSColor { Tema.p.terminalFondo }
+
+    func colores() {
+        vista.nativeBackgroundColor = Tema.p.terminalFondo
+        vista.nativeForegroundColor = Tema.p.terminalTexto
+        vista.caretColor = Tema.p.cursor
+        vista.needsDisplay = true
+    }
+
+    /// lo que se ve en la pestaña
+    var etiqueta: String { nombre ?? titulo }
 
     @MainActor
     init(cwd: String, motor: Motor?, sesionId: String?, titulo: String, store: Store) {
@@ -556,9 +849,7 @@ final class Term: NSObject, ObservableObject, Identifiable, LocalProcessTerminal
         vista = VistaTerminal(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
         super.init()
         vista.processDelegate = self
-        vista.nativeBackgroundColor = Term.fondo
-        vista.nativeForegroundColor = NSColor(hex: 0xE6ECF7)
-        vista.caretColor = NSColor(hex: 0x4D8AE6)
+        colores()
         vista.optionAsMetaKey = false // Option + tecla escribe @, #, etc. con teclado en español
         let b = salida
         vista.setProcessOutputHandler { b.encender() }

@@ -3,18 +3,7 @@ import SwiftUI
 
 // MARK: - colores
 
-enum Tema {
-    static let fondo = Color(hex: 0x0E1730)      // noche azul
-    static let lado = Color(hex: 0x0A1126)
-    static let linea = Color(hex: 0x8CAAE6, 0.13)
-    static let texto = Color(hex: 0xEEF2FB)
-    static let gris = Color(hex: 0x93A6CC)
-    static let tenue = Color(hex: 0x5E7099)
-    static let azul = Color(hex: 0x4D8AE6)       // azul cielo
-    static let sel = Color(hex: 0x4D8AE6, 0.20)
-    static let hover = Color(hex: 0xFFFFFF, 0.05)
-    static let tarjeta = Color(hex: 0x16244A, 0.72)
-}
+// los colores viven en Temas.swift (Tema, Paleta)
 
 // MARK: - raíz
 
@@ -42,11 +31,13 @@ struct Raiz: View {
             }
         }
         .ignoresSafeArea()
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(Tema.p.oscuro ? .dark : .light)
         .alert("Nueva carpeta", isPresented: $store.pideNuevaCarpeta) {
             TextField("Nombre", text: $nombreNuevo)
             Button("Crear") { store.crearCarpeta(nombreNuevo); nombreNuevo = "" }
             Button("Cancelar", role: .cancel) { nombreNuevo = "" }
+        } message: {
+            Text("Se crea en \(Datos.corta(store.dondeCrear))")
         }
         .alert(store.aviso ?? "", isPresented: Binding(get: { store.aviso != nil }, set: { if !$0 { store.aviso = nil } })) {
             Button("OK", role: .cancel) {}
@@ -61,35 +52,52 @@ struct Lateral: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Color.clear.frame(height: 46) // semáforos de la ventana
+            HStack { // semáforos de la ventana a la izquierda, el tema a la derecha
+                Spacer()
+                MenuTema().padding(.trailing, 14)
+            }
+            .frame(height: 46)
             ScrollView {
                 VStack(alignment: .leading, spacing: 1) {
-                    Titulo(texto: "Carpetas")
-                    FilaLateral(icono: "square.grid.2x2", nombre: "Todas", detalle: "\(store.total)", activa: store.vista == .inicio) {
+                    Titulo(texto: store.nombreRaiz)
+                    FilaLateral(icono: "square.grid.2x2", nombre: "Todas", detalle: "\(store.total)", activa: store.vista == .inicio, margen: 20) {
                         store.vista = .inicio
                     }
-                    ForEach(store.carpetas) { c in
-                        FilaCarpetaLateral(carpeta: c)
+                    // tus carpetas, igual que en el Finder
+                    ForEach(store.carpetas.filter { !$0.grupo }) { c in
+                        RamaLateral(carpeta: c, nivel: 0)
                     }
-                    HStack {
-                        Titulo(texto: "Abiertas")
-                        Spacer()
-                        Button { store.nuevaTerminal() } label: {
-                            Image(systemName: "plus").font(Letra.fuerte(11)).foregroundColor(Tema.gris)
-                                .frame(width: 22, height: 22).contentShape(Rectangle())
+                    // lo que no está dentro de ninguna
+                    let aparte = store.carpetas.filter(\.grupo)
+                    if !aparte.isEmpty {
+                        Titulo(texto: "Aparte")
+                        ForEach(aparte) { c in
+                            RamaLateral(carpeta: c, nivel: 0)
                         }
-                        .buttonStyle(.plain)
-                        .help("Terminal nueva (⌘N)")
-                        .padding(.trailing, 10)
-                        .padding(.top, 14)
                     }
-                    if store.terminales.isEmpty {
+                    CabeceraAbiertas()
+                    if store.terminales.isEmpty && store.grupos.isEmpty {
                         Text("Abre una sesión y aparece aquí")
                             .font(Letra.texto(11.5)).foregroundColor(Tema.tenue)
                             .padding(.horizontal, 18).padding(.vertical, 6)
                     }
-                    ForEach(Array(store.terminales.enumerated()), id: \.element.id) { k, t in
-                        FilaTerminal(term: t, numero: k + 1)
+                    let orden = store.ordenadas.map(\.id)
+                    ForEach(store.grupos) { g in
+                        FilaGrupo(grupo: g)
+                        if !g.plegado {
+                            let dentro = store.pestanas(de: g.id)
+                            if dentro.isEmpty {
+                                Text("Arrastra pestañas aquí")
+                                    .font(Letra.texto(11.5)).foregroundColor(Tema.tenue)
+                                    .padding(.leading, 46).padding(.vertical, 4)
+                            }
+                            ForEach(dentro) { t in
+                                FilaTerminal(term: t, numero: (orden.firstIndex(of: t.id) ?? 99) + 1, sangria: 14)
+                            }
+                        }
+                    }
+                    ForEach(store.sueltas) { t in
+                        FilaTerminal(term: t, numero: (orden.firstIndex(of: t.id) ?? 99) + 1)
                     }
                 }
                 .padding(.bottom, 16)
@@ -116,6 +124,7 @@ struct FilaLateral: View {
     let detalle: String
     let activa: Bool
     var resaltada = false
+    var margen: CGFloat = 10
     let accion: () -> Void
     @State private var hover = false
 
@@ -129,9 +138,10 @@ struct FilaLateral: View {
             Spacer(minLength: 4)
             Text(detalle).font(Letra.texto(11.5)).foregroundColor(Tema.tenue)
         }
-        .padding(.horizontal, 10)
+        .padding(.leading, margen)
+        .padding(.trailing, 10)
         .frame(height: 28)
-        .background(RoundedRectangle(cornerRadius: 6).fill(resaltada ? Tema.azul.opacity(0.5) : activa ? Tema.sel : hover ? Tema.hover : .clear))
+        .background(Forma(cornerRadius: 6).fill(resaltada ? Tema.azul.opacity(0.5) : activa ? Tema.sel : hover ? Tema.hover : .clear))
         .contentShape(Rectangle())
         .onHover { hover = $0 }
         .onTapGesture(perform: accion)
@@ -139,21 +149,219 @@ struct FilaLateral: View {
     }
 }
 
+extension Carpeta {
+    var icono: String {
+        if id == Datos.nArchivo { return "archivebox" }
+        if id == Datos.nFuera { return "folder" }
+        if id == Datos.nPerdidas || (ruta == nil && !grupo) { return "questionmark.folder" }
+        if grupo { return ruta == nil ? "flask" : "tray.full" } // Pruebas / las sueltas
+        return "folder.fill"
+    }
+
+    var cuantas: String { total == 0 ? "vacía" : total == 1 ? "1 sesión" : "\(total) sesiones" }
+}
+
+/// Una carpeta de la barra lateral y, si está desplegada, las que tiene dentro.
+struct RamaLateral: View {
+    @EnvironmentObject var store: Store
+    let carpeta: Carpeta
+    let nivel: Int
+
+    var body: some View {
+        FilaCarpetaLateral(carpeta: carpeta, nivel: nivel)
+        if store.desplegadas.contains(carpeta.id) {
+            ForEach(carpeta.hijos) { h in
+                RamaLateral(carpeta: h, nivel: nivel + 1)
+            }
+        }
+    }
+}
+
 struct FilaCarpetaLateral: View {
     @EnvironmentObject var store: Store
     let carpeta: Carpeta
+    let nivel: Int
+    @State private var destino = false
+    @State private var hover = false
+
+    var activa: Bool { store.vista == .carpeta(carpeta.id) }
+    var abierta: Bool { store.desplegadas.contains(carpeta.id) }
+    var archivo: Bool { carpeta.id == Datos.nArchivo }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            // la flecha despliega; el resto de la fila abre la carpeta
+            Image(systemName: "chevron.right")
+                .font(.system(size: 8.5, weight: .bold))
+                .foregroundColor(Tema.tenue)
+                .rotationEffect(.degrees(abierta ? 90 : 0))
+                .animation(.easeOut(duration: 0.12), value: abierta)
+                .frame(width: 14, height: 28)
+                .contentShape(Rectangle())
+                .opacity(carpeta.hijos.isEmpty ? 0 : 1)
+                .allowsHitTesting(!carpeta.hijos.isEmpty)
+                .onTapGesture { store.desplegar(carpeta.id) }
+            HStack(spacing: 8) {
+                Image(systemName: carpeta.icono)
+                    .font(Letra.texto(12))
+                    .foregroundColor(activa ? Tema.texto : Tema.gris)
+                    .frame(width: 16)
+                Text(carpeta.nombre).font(Letra.texto(13)).foregroundColor(carpeta.total == 0 ? Tema.gris : Tema.texto).lineLimit(1)
+                Spacer(minLength: 4)
+                if carpeta.total > 0 {
+                    Text("\(carpeta.total)").font(Letra.texto(11.5)).foregroundColor(Tema.tenue)
+                }
+            }
+        }
+        .padding(.leading, 6 + CGFloat(nivel) * 14)
+        .padding(.trailing, 10)
+        .frame(height: 28)
+        .background(Forma(cornerRadius: 6).fill(destino ? Tema.azul.opacity(0.5) : activa ? Tema.sel : hover ? Tema.hover : .clear))
+        .contentShape(Rectangle())
+        .onHover { hover = $0 }
+        .onTapGesture { store.abrirCarpeta(carpeta.id) }
+        .padding(.horizontal, 8)
+        .dropDestination(for: String.self) { ids, _ in
+            guard archivo else { return false }
+            store.mover(ids, a: carpeta.id)
+            return true
+        } isTargeted: { destino = $0 && archivo }
+        .contextMenu { MenuCarpeta(carpeta: carpeta) }
+        .help(carpeta.ruta.map(Datos.corta) ?? "")
+    }
+}
+
+/// "Abiertas", con los botones de grupo nuevo y terminal nueva. Soltar una pestaña aquí la saca de su grupo.
+struct CabeceraAbiertas: View {
+    @EnvironmentObject var store: Store
     @State private var destino = false
 
     var body: some View {
-        FilaLateral(icono: "folder.fill", nombre: carpeta.nombre, detalle: "\(carpeta.sesiones.count)",
-                    activa: store.vista == .carpeta(carpeta.nombre), resaltada: destino) {
-            store.abrirCarpeta(carpeta.nombre)
+        HStack(spacing: 2) {
+            Titulo(texto: "Abiertas")
+            Spacer()
+            Group {
+                Button { store.nuevoGrupo() } label: {
+                    Image(systemName: "square.3.layers.3d").font(Letra.fuerte(11)).foregroundColor(Tema.gris)
+                        .frame(width: 22, height: 22).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Grupo de pestañas nuevo")
+                Button { store.nuevaTerminal() } label: {
+                    Image(systemName: "plus").font(Letra.fuerte(11)).foregroundColor(Tema.gris)
+                        .frame(width: 22, height: 22).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Terminal nueva (⌘N)")
+            }
+            .padding(.top, 14)
         }
-        .dropDestination(for: String.self) { ids, _ in
-            store.mover(ids, a: carpeta.nombre)
-            return true
+        .padding(.trailing, 10)
+        .background(Forma(cornerRadius: 6).fill(destino ? Tema.azul.opacity(0.35) : .clear).padding(.horizontal, 8))
+        .dropDestination(for: String.self) { items, _ in
+            store.soltar(items, enGrupo: nil)
         } isTargeted: { destino = $0 }
-        .contextMenu { MenuCarpeta(carpeta: carpeta) }
+    }
+}
+
+/// Cabecera de un grupo de pestañas: flecha para plegar, nombre y cuántas tiene.
+struct FilaGrupo: View {
+    @EnvironmentObject var store: Store
+    let grupo: Grupo
+    @State private var hover = false
+    @State private var destino = false
+
+    var clave: String { "grupo:" + grupo.id.uuidString }
+    var cuantas: Int { store.pestanas(de: grupo.id).count }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "chevron.right")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundColor(Tema.gris)
+                .rotationEffect(.degrees(grupo.plegado ? 0 : 90))
+                .animation(.easeOut(duration: 0.12), value: grupo.plegado)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                if store.editando == clave {
+                    CampoNombre(inicial: grupo.nombre, fuente: Letra.fuerte(13)) { n in
+                        if let n { store.renombrarGrupo(grupo.id, n) }
+                        store.finEdicion()
+                    }
+                } else {
+                    Text(grupo.nombre).font(Letra.fuerte(13)).foregroundColor(Tema.texto).lineLimit(1)
+                }
+                Text(cuantas == 1 ? "1 pestaña" : "\(cuantas) pestañas").font(Letra.texto(11)).foregroundColor(Tema.tenue)
+            }
+            Spacer(minLength: 2)
+            if hover {
+                Button { store.nuevaTerminal(enGrupo: grupo.id) } label: {
+                    Image(systemName: "plus").font(.system(size: 10, weight: .bold)).foregroundColor(Tema.gris)
+                        .frame(width: 20, height: 20).background(Circle().fill(Tema.velo(0.08)))
+                }
+                .buttonStyle(.plain)
+                .help("Terminal nueva en este grupo")
+            }
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 40)
+        .background(Forma(cornerRadius: 6).fill(destino ? Tema.azul.opacity(0.4) : hover ? Tema.hover : .clear))
+        .contentShape(Rectangle())
+        .onHover { hover = $0 }
+        .onTapGesture(count: 2) { store.editando = clave }
+        .simultaneousGesture(TapGesture().onEnded { if store.editando != clave { store.plegar(grupo.id) } })
+        .dropDestination(for: String.self) { items, _ in
+            store.soltar(items, enGrupo: grupo.id)
+        } isTargeted: { destino = $0 }
+        .contextMenu {
+            Button("Renombrar") { store.editando = clave }
+            Button("Terminal nueva en el grupo") { store.nuevaTerminal(enGrupo: grupo.id) }
+            Divider()
+            Button("Desagrupar (las pestañas siguen abiertas)") { store.desagrupar(grupo.id) }
+            Button("Cerrar el grupo y sus pestañas") {
+                if cuantas == 0 || confirma("¿Cerrar «\(grupo.nombre)» y sus \(cuantas) pestañas?",
+                                             "Las sesiones no se pierden: puedes retomarlas desde sus carpetas.", "Cerrar") {
+                    store.cerrarGrupo(grupo.id)
+                }
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.top, 2)
+    }
+}
+
+/// Campo para escribir un nombre en el sitio. Enter guarda, Esc cancela, salir del campo guarda.
+struct CampoNombre: View {
+    let inicial: String
+    let fuente: Font
+    /// nil = cancelado
+    let listo: (String?) -> Void
+    @State private var texto = ""
+    @State private var hecho = false
+    @FocusState private var foco: Bool
+
+    var body: some View {
+        TextField("Nombre", text: $texto)
+            .textFieldStyle(.plain)
+            .font(fuente)
+            .foregroundColor(Tema.texto)
+            .padding(.horizontal, 4)
+            .background(Forma(cornerRadius: 4).fill(Tema.campo))
+            .overlay(Forma(cornerRadius: 4).stroke(Tema.azul.opacity(0.8)))
+            .focused($foco)
+            .onAppear {
+                texto = inicial
+                DispatchQueue.main.async { foco = true }
+            }
+            .onSubmit { terminar(texto) }
+            .onExitCommand { terminar(nil) }
+            .onChange(of: foco) { antes, ahora in if antes && !ahora { terminar(texto) } }
+    }
+
+    private func terminar(_ t: String?) {
+        guard !hecho else { return }
+        hecho = true
+        listo(t)
     }
 }
 
@@ -161,23 +369,39 @@ struct FilaTerminal: View {
     @EnvironmentObject var store: Store
     @ObservedObject var term: Term
     let numero: Int
+    var sangria: CGFloat = 0
     @State private var hover = false
 
     var activa: Bool { store.vista == .terminal(term.id) || store.terminalLado === term }
+    var clave: String { "term:" + term.id.uuidString }
 
     var body: some View {
         HStack(spacing: 8) {
             IndicadorEstado(term: term, activa: activa)
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 1) {
-                Text(term.titulo).font(Letra.texto(12.5)).foregroundColor(Tema.texto).lineLimit(1)
-                Text((term.cwd as NSString).lastPathComponent).font(Letra.texto(11)).foregroundColor(Tema.tenue).lineLimit(1)
+                if store.editando == clave {
+                    CampoNombre(inicial: term.etiqueta, fuente: Letra.texto(12.5)) { n in
+                        if let n { store.renombrar(term, n) }
+                        store.finEdicion()
+                    }
+                } else {
+                    Text(term.etiqueta).font(Letra.texto(12.5)).foregroundColor(Tema.texto).lineLimit(1)
+                }
+                HStack(spacing: 4) {
+                    Text((term.cwd as NSString).lastPathComponent).lineLimit(1)
+                    if let r = term.rama {
+                        Image(systemName: "arrow.triangle.branch").font(.system(size: 8.5, weight: .semibold))
+                        Text(r).lineLimit(1)
+                    }
+                }
+                .font(Letra.texto(11)).foregroundColor(Tema.tenue)
             }
             Spacer(minLength: 2)
-            if hover {
+            if hover && store.editando != clave {
                 Button { store.cerrar(term) } label: {
                     Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundColor(Tema.gris)
-                        .frame(width: 18, height: 18).background(Circle().fill(Color.white.opacity(0.08)))
+                        .frame(width: 18, height: 18).background(Circle().fill(Tema.velo(0.08)))
                 }
                 .buttonStyle(.plain)
                 .help("Cerrar (⌘W)")
@@ -187,16 +411,41 @@ struct FilaTerminal: View {
         }
         .padding(.horizontal, 10)
         .frame(height: 40)
-        .background(RoundedRectangle(cornerRadius: 6).fill(activa ? Tema.sel : hover ? Tema.hover : .clear))
+        .background(Forma(cornerRadius: 6).fill(activa ? Tema.sel : hover ? Tema.hover : .clear))
         .contentShape(Rectangle())
         .onHover { hover = $0 }
-        .onTapGesture { store.mostrar(term) }
+        .onTapGesture(count: 2) { store.editando = clave }
+        .simultaneousGesture(TapGesture().onEnded { if store.editando != clave { store.mostrar(term) } })
+        .draggable(clave) {
+            Label(term.etiqueta, systemImage: term.motor == nil ? "terminal" : "sparkle")
+                .padding(6).background(Tema.lado).cornerRadius(6)
+        }
+        .dropDestination(for: String.self) { items, _ in
+            store.soltar(items.filter { $0 != clave }, enGrupo: term.grupo)
+        }
         .contextMenu {
+            Button("Renombrar") { store.editando = clave }
+            if store.tieneNombre(term) {
+                Button("Quitar el nombre") { store.renombrar(term, nil) }
+            }
+            Menu("Mover a grupo") {
+                ForEach(store.grupos) { g in
+                    Button(g.nombre) { store.mover(term, aGrupo: g.id) }.disabled(term.grupo == g.id)
+                }
+                if !store.grupos.isEmpty { Divider() }
+                Button("Grupo nuevo…") { store.nuevoGrupo(con: term) }
+            }
+            if term.grupo != nil {
+                Button("Sacar del grupo") { store.mover(term, aGrupo: nil) }
+            }
+            Divider()
             Button("Abrir al lado") { store.abrirAlLado(term) }.disabled(store.terminalActiva == nil || store.terminalActiva === term)
             Divider()
             Button("Cerrar") { store.cerrar(term) }
         }
-        .padding(.horizontal, 8)
+        .padding(.leading, 8 + sangria)
+        .padding(.trailing, 8)
+        .help("Doble clic para renombrar")
     }
 }
 
@@ -206,23 +455,35 @@ struct Cabecera: View {
     @EnvironmentObject var store: Store
     @FocusState private var buscando: Bool
 
+    var actual: Carpeta? {
+        if case .carpeta(let id) = store.vista { return store.carpeta(id) }
+        return nil
+    }
+
     var titulo: String {
         switch store.vista {
-        case .inicio: return "Carpetas"
-        case .carpeta(let n): return n
+        case .inicio: return store.nombreRaiz
+        case .carpeta: return actual?.nombre ?? ""
         case .buscar: return "Buscar"
-        case .terminal: return store.terminalActiva?.titulo ?? "Terminal"
+        case .terminal: return store.terminalActiva?.etiqueta ?? "Terminal"
         }
     }
 
     var subtitulo: String {
         switch store.vista {
-        case .inicio: return "\(store.total) sesiones de Claude y Codex"
-        case .carpeta(let n):
-            let d = store.dirDeTrabajo(n).dir.replacingOccurrences(of: Datos.home, with: "~")
-            return "\(store.sesiones(de: n).count) sesiones · las nuevas se abren en \(d)"
+        case .inicio: return "\(store.total) sesiones de Claude y Codex · \(Datos.corta(store.raiz))"
+        case .carpeta:
+            guard let c = actual else { return "" }
+            let donde: String
+            if let r = c.ruta { donde = Datos.corta(r) }
+            else if c.id == Datos.nFuera { donde = "abiertas fuera de \(store.nombreRaiz)" }
+            else if c.id == Datos.nPerdidas { donde = "su carpeta se movió o se borró" }
+            else if c.id == Datos.nArchivo { donde = "las que archivaste" }
+            else if c.id.hasPrefix(Datos.nPerdidas + ":") { donde = "ya no existe " + Datos.corta(String(c.id.dropFirst(Datos.nPerdidas.count + 1))) }
+            else { donde = "carpetas temporales" }
+            return "\(c.cuantas) · \(donde)"
         case .buscar: return "\(store.resultados.count) resultados"
-        case .terminal: return store.terminalActiva.map { $0.cwd.replacingOccurrences(of: Datos.home, with: "~") } ?? ""
+        case .terminal: return store.terminalActiva.map { Datos.corta($0.cwd) } ?? ""
         }
     }
 
@@ -230,21 +491,23 @@ struct Cabecera: View {
         HStack(spacing: 10) {
             if store.vista != .inicio {
                 Button {
-                    if store.vista == .buscar { store.query = "" } else { store.vista = .inicio }
+                    if store.vista == .buscar { store.query = "" }
+                    else if case .carpeta(let id) = store.vista, let p = store.padre(de: id) { store.abrirCarpeta(p.id) }
+                    else { store.vista = .inicio }
                 } label: {
                     Image(systemName: "chevron.left").font(Letra.fuerte(13)).foregroundColor(Tema.gris)
                         .frame(width: 26, height: 26).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Volver a las carpetas (⌘T)")
+                .help("Volver (⌘T te lleva al inicio)")
             }
             VStack(alignment: .leading, spacing: 1) {
                 Text(titulo).font(Letra.titulo(15)).tracking(-0.3).foregroundColor(Tema.texto).lineLimit(1)
                 Text(subtitulo).font(Letra.texto(11.5)).foregroundColor(Tema.gris).lineLimit(1)
             }
             Spacer(minLength: 12)
-            if case .carpeta(let n) = store.vista { MenuNuevaSesion(carpeta: n) }
-            if store.vista == .inicio {
+            if let c = actual, c.ruta != nil { MenuNuevaSesion(carpeta: c) }
+            if store.vista != .buscar, store.puedeCrearCarpeta {
                 Button { store.pideNuevaCarpeta = true } label: {
                     Label("Nueva carpeta", systemImage: "folder.badge.plus").font(Letra.texto(12.5))
                 }
@@ -274,8 +537,17 @@ struct Cabecera: View {
                 }
                 .padding(.horizontal, 9)
                 .frame(width: 230, height: 28)
-                .background(RoundedRectangle(cornerRadius: 7).fill(Color.white.opacity(0.07)))
+                .background(Forma(cornerRadius: 7).fill(Tema.velo(0.07)))
             }
+            if store.hayVersionNueva {
+                Button { store.reiniciar() } label: {
+                    Label("Actualizar", systemImage: "arrow.clockwise").font(Letra.fuerte(12.5))
+                }
+                .buttonStyle(PastillaAzulChica())
+                .help("Hay una versión nueva instalada. Reinicia la app: tus pestañas vuelven y la que estás viendo se retoma sola.")
+            }
+            // uso de Claude (5 h y semana), como en Warp
+            BotonUso()
         }
         .padding(.leading, 18)
         .padding(.trailing, 16)
@@ -291,52 +563,34 @@ struct Pastilla: ButtonStyle {
             .foregroundColor(Tema.texto)
             .padding(.horizontal, 11)
             .frame(height: 28)
-            .background(RoundedRectangle(cornerRadius: 7).fill(Color.white.opacity(configuration.isPressed ? 0.16 : 0.09)))
+            .background(Forma(cornerRadius: 7).fill(Tema.velo(configuration.isPressed ? 0.16 : 0.09)))
     }
 }
 
 struct MenuNuevaSesion: View {
     @EnvironmentObject var store: Store
-    let carpeta: String
-
-    var dirs: [String] {
-        var vistos = Set<String>(), out: [String] = []
-        for s in store.sesiones(de: carpeta) where !vistos.contains(s.cwd) && FileManager.default.fileExists(atPath: s.cwd) {
-            vistos.insert(s.cwd); out.append(s.cwd)
-            if out.count == 6 { break }
-        }
-        return out
-    }
+    let carpeta: Carpeta
 
     var body: some View {
-        let trabajo = store.dirDeTrabajo(carpeta)
-        let corto = trabajo.dir.replacingOccurrences(of: Datos.home, with: "~")
+        let corto = Datos.corta(carpeta.ruta ?? "")
         Menu {
-            Button("Codex en \(corto)") { store.sesionAqui(carpeta, motor: .codex) }
-            let otras = dirs.filter { $0 != trabajo.dir }
-            if !otras.isEmpty {
-                Section("Claude en otra carpeta de esta") {
-                    ForEach(otras.prefix(5), id: \.self) { d in
-                        Button(d.replacingOccurrences(of: Datos.home, with: "~")) { store.nuevaSesion(en: d, carpeta: carpeta) }
-                    }
-                }
-            }
+            Button("Codex en \(corto)") { store.sesionAqui(carpeta.id, motor: .codex) }
+            Button("Terminal en \(corto)") { store.nuevaTerminal(en: carpeta.ruta) }
             Divider()
             Button("Elegir otra carpeta del disco…") {
-                if let d = elegirDirectorio(trabajo.dir) { store.nuevaSesion(en: d, carpeta: carpeta) }
+                if let d = elegirDirectorio(carpeta.ruta) { store.nuevaSesion(en: d) }
             }
-            Button("Cambiar carpeta de trabajo…") { store.cambiarDir(carpeta) }
         } label: {
             Label("Nueva sesión", systemImage: "plus").font(Letra.texto(12.5))
         } primaryAction: {
-            store.sesionAqui(carpeta)
+            store.sesionAqui(carpeta.id)
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
         .padding(.horizontal, 11)
         .frame(height: 28)
-        .background(RoundedRectangle(cornerRadius: 7).fill(Color.white.opacity(0.09)))
-        .help("Abre Claude en \(corto)\(trabajo.nueva ? " (se crea al abrir)" : ""). La flecha tiene más opciones.")
+        .background(Forma(cornerRadius: 7).fill(Tema.velo(0.09)))
+        .help("Abre Claude en \(corto). La flecha tiene más opciones.")
     }
 }
 
@@ -386,7 +640,7 @@ struct Cuadricula: View {
             .padding(margen)
         }
         .background(GeometryReader { g in Color.clear.onAppear { ancho = g.size.width }.onChange(of: g.size.width) { _, w in ancho = w } })
-        .background(FondoNoche())
+        .background(FondoTema())
         .focusable()
         .focusEffectDisabled()
         .focused($foco)
@@ -402,10 +656,10 @@ struct Cuadricula: View {
     }
 
     private func paso(_ d: Int) -> KeyPress.Result {
-        let nombres = store.carpetas.map(\.nombre)
-        guard !nombres.isEmpty else { return .handled }
-        let k = nombres.firstIndex(of: store.carpetaSel ?? "") ?? 0
-        store.carpetaSel = nombres[min(nombres.count - 1, max(0, k + d))]
+        let ids = store.carpetas.map(\.id)
+        guard !ids.isEmpty else { return .handled }
+        let k = ids.firstIndex(of: store.carpetaSel ?? "") ?? 0
+        store.carpetaSel = ids[min(ids.count - 1, max(0, k + d))]
         return .handled
     }
 }
@@ -415,40 +669,39 @@ struct Baldosa: View {
     let carpeta: Carpeta
     @State private var destino = false
 
-    var sel: Bool { store.carpetaSel == carpeta.nombre }
+    var sel: Bool { store.carpetaSel == carpeta.id }
+    var archivo: Bool { carpeta.id == Datos.nArchivo }
 
     var body: some View {
         VStack(spacing: 7) {
             CarpetaPixel(abierta: sel)
                 .frame(width: 112, height: 84)
                 .padding(9)
-                .background(RoundedRectangle(cornerRadius: 9).fill(destino ? Tema.azul.opacity(0.35) : sel ? Tema.sel : .clear))
+                .background(Forma(cornerRadius: 9).fill(destino ? Tema.azul.opacity(0.35) : sel ? Tema.sel : .clear))
             Text(carpeta.nombre)
                 .font(Letra.fuerte(13.5))
                 .foregroundColor(sel ? .white : Tema.texto)
                 .lineLimit(1)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
-                .background(RoundedRectangle(cornerRadius: 5).fill(sel ? Tema.azul : .clear))
-                .shadow(color: .black.opacity(sel ? 0 : 0.45), radius: 3, y: 1)
-            Text(carpeta.sesiones.count == 1 ? "1 ítem" : "\(carpeta.sesiones.count) ítems")
+                .background(Forma(cornerRadius: 5).fill(sel ? Tema.azul : .clear))
+                .shadow(color: Tema.sombraTexto.opacity(sel ? 0 : 0.45), radius: 3, y: 1)
+            Text(carpeta.hijos.isEmpty ? carpeta.cuantas : "\(carpeta.hijos.count) \(carpeta.hijos.count == 1 ? "carpeta" : "carpetas") · \(carpeta.cuantas)")
                 .font(Letra.texto(12.5))
                 .foregroundColor(Tema.gris)
-                .shadow(color: .black.opacity(0.6), radius: 3, y: 1)
+                .lineLimit(1)
+                .shadow(color: Tema.sombraTexto.opacity(0.6), radius: 3, y: 1)
         }
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) { store.abrirCarpeta(carpeta.nombre) }
-        .simultaneousGesture(TapGesture().onEnded { store.carpetaSel = carpeta.nombre })
+        .onTapGesture(count: 2) { store.abrirCarpeta(carpeta.id) }
+        .simultaneousGesture(TapGesture().onEnded { store.carpetaSel = carpeta.id })
         .contextMenu { MenuCarpeta(carpeta: carpeta) }
-        .draggable("carpeta:" + carpeta.nombre)
-        .dropDestination(for: String.self) { items, _ in
-            if let c = items.first, c.hasPrefix("carpeta:") {
-                store.mueveCarpeta(String(c.dropFirst(8)), antesDe: carpeta.nombre)
-            } else {
-                store.mover(items, a: carpeta.nombre)
-            }
+        .dropDestination(for: String.self) { ids, _ in
+            guard archivo else { return false }
+            store.mover(ids, a: carpeta.id)
             return true
-        } isTargeted: { destino = $0 }
+        } isTargeted: { destino = $0 && archivo }
+        .help(carpeta.ruta.map(Datos.corta) ?? "")
     }
 }
 
@@ -457,42 +710,14 @@ struct MenuCarpeta: View {
     let carpeta: Carpeta
 
     var body: some View {
-        Button("Abrir") { store.abrirCarpeta(carpeta.nombre) }
-        Button("Renombrar…") {
-            if let n = pideTexto("Renombrar carpeta", valor: carpeta.nombre, boton: "Renombrar") { store.renombrar(carpeta.nombre, n) }
+        Button("Abrir") { store.abrirCarpeta(carpeta.id) }
+        if let r = carpeta.ruta {
+            Button("Nueva sesión aquí") { store.sesionAqui(carpeta.id) }
+            Button("Terminal aquí") { store.nuevaTerminal(en: r) }
+            Divider()
+            Button("Mostrar en Finder") { NSWorkspace.shared.open(URL(fileURLWithPath: r)) }
         }
-        .disabled(carpeta.auto)
-        Divider()
-        Button("Eliminar carpeta…") {
-            if confirma("¿Eliminar la carpeta «\(carpeta.nombre)»?", "Las sesiones no se borran: vuelven a repartirse solas en las otras carpetas.", "Eliminar") {
-                store.borrar(carpeta.nombre)
-            }
-        }
-        .disabled(carpeta.fija)
     }
-}
-
-@MainActor
-func pideTexto(_ titulo: String, valor: String, boton: String) -> String? {
-    let a = NSAlert()
-    a.messageText = titulo
-    a.addButton(withTitle: boton)
-    a.addButton(withTitle: "Cancelar")
-    let campo = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-    campo.stringValue = valor
-    a.accessoryView = campo
-    a.window.initialFirstResponder = campo
-    return a.runModal() == .alertFirstButtonReturn ? campo.stringValue : nil
-}
-
-@MainActor
-func confirma(_ msg: String, _ detalle: String, _ boton: String) -> Bool {
-    let a = NSAlert()
-    a.messageText = msg
-    a.informativeText = detalle
-    a.addButton(withTitle: boton)
-    a.addButton(withTitle: "Cancelar")
-    return a.runModal() == .alertFirstButtonReturn
 }
 
 /// La carpeta gris de tu referencia (estilo Finder oscuro), dibujada en vectores.
@@ -527,12 +752,30 @@ struct ListaSesiones: View {
 
     var body: some View {
         let lista = store.listaActual
+        let actual: Carpeta? = { if case .carpeta(let id) = store.vista { return store.carpeta(id) }; return nil }()
+        let dentro = actual?.hijos ?? []
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 2) {
+                    // como en el Finder: primero las carpetas que tiene dentro, luego sus sesiones
+                    if !dentro.isEmpty {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 22)], alignment: .leading, spacing: 26) {
+                            ForEach(dentro) { c in Baldosa(carpeta: c) }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.top, 16)
+                        .padding(.bottom, 26)
+                        if !lista.isEmpty {
+                            Text("Sesiones de aquí dentro")
+                                .font(Letra.titulo(13)).foregroundColor(Tema.gris)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 12)
+                                .padding(.bottom, 8)
+                        }
+                    }
                     if lista.isEmpty {
-                        if case .carpeta(let n) = store.vista {
-                            CarpetaVacia(carpeta: n).padding(.top, 70)
+                        if let c = actual {
+                            if dentro.isEmpty { CarpetaVacia(carpeta: c).padding(.top, 70) }
                         } else {
                             Text("Nada con esas palabras.").font(Letra.texto(13)).foregroundColor(Tema.gris).padding(.top, 60)
                         }
@@ -586,10 +829,18 @@ struct FilaSesion: View {
                 .frame(width: 6, height: 6)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    Text(sesion.titulo)
-                        .font(Letra.fuerte(13.5))
-                        .foregroundColor(Tema.texto)
-                        .lineLimit(1)
+                    if store.editando == "sesion:" + sesion.id {
+                        CampoNombre(inicial: sesion.titulo, fuente: Letra.fuerte(13.5)) { n in
+                            if let n { store.nombrarSesion(sesion.id, Datos.limpia(n).isEmpty ? nil : Datos.limpia(n)) }
+                            store.editando = nil
+                        }
+                        .frame(maxWidth: 420)
+                    } else {
+                        Text(sesion.titulo)
+                            .font(Letra.fuerte(13.5))
+                            .foregroundColor(Tema.texto)
+                            .lineLimit(1)
+                    }
                     if sesion.motor == .codex { Insignia(texto: "Codex") }
                 }
                 Text(meta)
@@ -604,7 +855,7 @@ struct FilaSesion: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
-        .background(RoundedRectangle(cornerRadius: 8).fill(sel ? Tema.sel : hover ? Tema.hover : .clear))
+        .background(Forma(cornerRadius: 8).fill(sel ? Tema.sel : hover ? Tema.hover : .clear))
         .contentShape(Rectangle())
         .onHover { hover = $0 }
         .onTapGesture(count: 2) { store.retomar(sesion) }
@@ -614,19 +865,11 @@ struct FilaSesion: View {
         }
         .contextMenu {
             Button("Retomar") { store.retomar(sesion) }
-            Menu("Mover a") {
-                ForEach(store.carpetas) { c in
-                    Button(c.nombre) { store.mover([sesion.id], a: c.nombre) }.disabled(c.nombre == sesion.carpeta)
-                }
-                Divider()
-                Button("Carpeta nueva…") {
-                    if let n = pideTexto("Nueva carpeta", valor: "", boton: "Crear y mover") {
-                        store.crearCarpeta(n)
-                        store.mover([sesion.id], a: Datos.limpia(n))
-                    }
-                }
+            Button("Renombrar") { store.editando = "sesion:" + sesion.id }
+            if store.nombres[sesion.id] != nil {
+                Button("Quitar el nombre") { store.nombrarSesion(sesion.id, nil) }
             }
-            if sesion.carpeta == "Archivo" {
+            if sesion.carpeta == Datos.nArchivo {
                 Button("Sacar del archivo") { store.archivar([sesion.id], false) }
             } else {
                 Button("Archivar") { store.archivar([sesion.id], true) }
@@ -643,7 +886,6 @@ struct FilaSesion: View {
 
     var meta: String {
         var partes = [String]()
-        if enBusqueda { partes.append(sesion.carpeta) }
         partes.append(sesion.proyecto + (sesion.sdk ? " · automática (SDK)" : ""))
         partes.append(sesion.prompt)
         return partes.joined(separator: "  ·  ")
@@ -718,7 +960,7 @@ struct Panel: View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
                 IndicadorEstado(term: term, activa: true)
-                Text(term.titulo).font(Letra.fuerte(11.5)).foregroundColor(Tema.gris).lineLimit(1)
+                Text(term.etiqueta).font(Letra.fuerte(11.5)).foregroundColor(Tema.gris).lineLimit(1)
                 Spacer()
                 if !principal {
                     Button { store.lado = nil } label: {
@@ -789,14 +1031,14 @@ struct TarjetaReciente: View {
                     Spacer(minLength: 0)
                     if sesion.motor == .codex { Insignia(texto: "Codex") }
                 }
-                Text("\(sesion.carpeta) · \(sesion.proyecto) · \(hace(sesion.mtime))")
+                Text("\(sesion.proyecto) · \(hace(sesion.mtime))")
                     .font(Letra.texto(11.5)).foregroundColor(Tema.gris).lineLimit(1)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 11)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 9).fill(hover ? Color(hex: 0x1D2F5E, 0.85) : Tema.tarjeta))
-            .overlay(RoundedRectangle(cornerRadius: 9).stroke(Tema.linea))
+            .background(Forma(cornerRadius: 9).fill(hover ? Tema.tarjetaHover : Tema.tarjeta))
+            .overlay(Forma(cornerRadius: 9).stroke(Tema.linea))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -814,33 +1056,39 @@ struct Insignia: View {
             .foregroundColor(Tema.gris)
             .padding(.horizontal, 5)
             .padding(.vertical, 1)
-            .background(RoundedRectangle(cornerRadius: 4).stroke(Tema.tenue))
+            .background(Forma(cornerRadius: 4).stroke(Tema.tenue))
     }
 }
 
 struct CarpetaVacia: View {
     @EnvironmentObject var store: Store
-    let carpeta: String
+    let carpeta: Carpeta
 
     var body: some View {
-        let t = store.dirDeTrabajo(carpeta)
         VStack(spacing: 14) {
             CarpetaPixel().frame(width: 80, height: 60)
             Text("Todavía no hay sesiones aquí").font(Letra.titulo(17)).foregroundColor(Tema.texto)
-            HStack(spacing: 10) {
-                Button { store.sesionAqui(carpeta) } label: { Label("Empezar con Claude", systemImage: "sparkle") }
-                    .buttonStyle(PastillaAzul())
-                Button { store.sesionAqui(carpeta, motor: .codex) } label: { Text("Con Codex") }
-                    .buttonStyle(Pastilla())
+            if let r = carpeta.ruta {
+                HStack(spacing: 10) {
+                    Button { store.sesionAqui(carpeta.id) } label: { Label("Empezar con Claude", systemImage: "sparkle") }
+                        .buttonStyle(PastillaAzul())
+                    Button { store.sesionAqui(carpeta.id, motor: .codex) } label: { Text("Con Codex") }
+                        .buttonStyle(Pastilla())
+                }
+                Text("Se abre en \(Datos.corta(r))").font(Letra.texto(12)).foregroundColor(Tema.gris)
             }
-            HStack(spacing: 6) {
-                Text("Se abre en \(t.dir.replacingOccurrences(of: Datos.home, with: "~"))\(t.nueva ? " (la creo al empezar)" : "")")
-                Button("Cambiar") { store.cambiarDir(carpeta) }.buttonStyle(.link)
-            }
-            .font(Letra.texto(12)).foregroundColor(Tema.gris)
-            Text("También puedes arrastrar sesiones aquí desde otra carpeta.").font(Letra.texto(12)).foregroundColor(Tema.tenue)
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+struct PastillaAzulChica: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundColor(.white)
+            .padding(.horizontal, 11)
+            .frame(height: 28)
+            .background(Forma(cornerRadius: 7).fill(Tema.azul.opacity(configuration.isPressed ? 0.8 : 1)))
     }
 }
 
@@ -851,6 +1099,16 @@ struct PastillaAzul: ButtonStyle {
             .foregroundColor(.white)
             .padding(.horizontal, 14)
             .frame(height: 32)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Tema.azul.opacity(configuration.isPressed ? 0.8 : 1)))
+            .background(Forma(cornerRadius: 8).fill(Tema.azul.opacity(configuration.isPressed ? 0.8 : 1)))
     }
+}
+
+@MainActor
+func confirma(_ msg: String, _ detalle: String, _ boton: String) -> Bool {
+    let a = NSAlert()
+    a.messageText = msg
+    a.informativeText = detalle
+    a.addButton(withTitle: boton)
+    a.addButton(withTitle: "Cancelar")
+    return a.runModal() == .alertFirstButtonReturn
 }
