@@ -241,6 +241,40 @@ final class Store: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
         if carpeta(id)?.hijos.isEmpty == false { desplegadas.insert(id) }
     }
 
+    /// Mueve la carpeta del disco a la Papelera (se puede recuperar). Solo dentro de la carpeta de proyectos,
+    /// y nunca con terminales abiertas adentro. Las sesiones no se borran: quedan en «Ya no existen».
+    func eliminarCarpeta(_ c: Carpeta) {
+        guard let ruta = c.ruta else { return }
+        let r = (ruta as NSString).standardizingPath
+        let base = (Datos.carpetaBase() as NSString).standardizingPath
+        guard r.hasPrefix(base + "/"), r != base, r != Datos.home else {
+            aviso = "Solo puedo eliminar carpetas que están dentro de tu carpeta de proyectos (\(Datos.corta(base)))."
+            return
+        }
+        let dentro: (String) -> Bool = { $0 == r || $0.hasPrefix(r + "/") }
+        let abiertasAqui = terminales.filter { $0.iniciado && dentro($0.cwd) }
+        guard abiertasAqui.isEmpty else {
+            aviso = abiertasAqui.count == 1
+                ? "Hay una terminal abierta en esta carpeta («\(abiertasAqui[0].titulo)»). Ciérrala primero."
+                : "Hay \(abiertasAqui.count) terminales abiertas en esta carpeta. Ciérralas primero."
+            return
+        }
+        let n = c.todas.count
+        var detalle = "Se mueve a la Papelera con todo lo que tiene adentro; puedes recuperarla desde ahí."
+        if FileManager.default.fileExists(atPath: r + "/.git") { detalle += " Es un repositorio de git: si tiene cambios sin subir, se van con la carpeta." }
+        if n > 0 { detalle += " Sus \(n) sesión\(n == 1 ? "" : "es") de Claude/Codex no se borran: quedan en «Ya no existen»." }
+        guard confirma("¿Mover «\(c.nombre)» a la Papelera?", detalle + "\n\n\(Datos.corta(r))", "Mover a la Papelera") else { return }
+        do {
+            try FileManager.default.trashItem(at: URL(fileURLWithPath: r), resultingItemURL: nil)
+        } catch {
+            aviso = "No pude moverla a la Papelera: \(error.localizedDescription)"
+            return
+        }
+        if case .carpeta(let id) = vista, let v = carpeta(id), let vr = v.ruta, dentro((vr as NSString).standardizingPath) { vista = .inicio }
+        if let sel = carpetaSel, let v = carpeta(sel), let vr = v.ruta, dentro((vr as NSString).standardizingPath) { carpetaSel = nil }
+        recargar()
+    }
+
     func desplegar(_ id: String) {
         if desplegadas.contains(id) { desplegadas.remove(id) } else { desplegadas.insert(id) }
     }

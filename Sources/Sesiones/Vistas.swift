@@ -716,6 +716,8 @@ struct MenuCarpeta: View {
             Button("Terminal aquí") { store.nuevaTerminal(en: r) }
             Divider()
             Button("Mostrar en Finder") { NSWorkspace.shared.open(URL(fileURLWithPath: r)) }
+            Divider()
+            Button("Mover a la Papelera…", role: .destructive) { store.eliminarCarpeta(carpeta) }
         }
     }
 }
