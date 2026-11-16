@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 swift build -c release
 APP=build/Sesiones.app
-VERSION=0.5.0
+VERSION=0.5.1
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/Sesiones "$APP/Contents/MacOS/Sesiones"
@@ -16,6 +16,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleName</key><string>Sesiones</string>
+  <key>CFBundleDevelopmentRegion</key><string>es</string>
   <key>CFBundleDisplayName</key><string>Sesiones</string>
   <key>CFBundleIdentifier</key><string>pe.rayyan.sesiones</string>
   <key>CFBundleExecutable</key><string>Sesiones</string>
