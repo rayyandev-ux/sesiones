@@ -1,3 +1,4 @@
+import AVFoundation
 import AppKit
 import SwiftUI
 
@@ -23,6 +24,26 @@ func listarYSalir() {
     exit(0)
 }
 
+/// `Sesiones --probar-voz audio.wav` pasa un audio por el mismo camino que el micrófono (en pedazos) y muestra el texto.
+func probarVozYSalir(_ ruta: String) {
+    guard #available(macOS 26.0, *) else { print("necesita macOS 26"); exit(1) }
+    Task {
+        do {
+            let s = try await SesionVoz26.crear(alAvisar: { print("… \($0)") }, descargando: { print("bajando modelo…") })
+            let f = try AVAudioFile(forReading: URL(fileURLWithPath: ruta))
+            while f.framePosition < f.length {
+                let b = AVAudioPCMBuffer(pcmFormat: f.processingFormat, frameCapacity: 2048)!
+                try f.read(into: b, frameCount: 2048)
+                s.recibir(b)
+            }
+            await s.cerrar()
+            print("FIN")
+        } catch { print("ERROR: \(error)") }
+        exit(0)
+    }
+    RunLoop.main.run()
+}
+
 @main
 struct SesionesApp: App {
     @NSApplicationDelegateAdaptor(Delegado.self) var delegado
@@ -33,6 +54,7 @@ struct SesionesApp: App {
 
     init() {
         if CommandLine.arguments.contains("--lista") { listarYSalir() }
+        if let i = CommandLine.arguments.firstIndex(of: "--probar-voz"), i + 1 < CommandLine.arguments.count { probarVozYSalir(CommandLine.arguments[i + 1]) }
         Letra.registrar()
     }
 
