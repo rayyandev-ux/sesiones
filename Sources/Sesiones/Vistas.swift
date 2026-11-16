@@ -47,8 +47,20 @@ struct Raiz: View {
 
 // MARK: - barra lateral
 
+/// Separa las carpetas en (con sesiones, ordenadas por la última que usaste) y (vacías, por nombre).
+func ordenarPorUso(_ cs: [Carpeta]) -> ([Carpeta], [Carpeta]) {
+    var con: [(Carpeta, Date)] = []
+    var vacias: [Carpeta] = []
+    for c in cs {
+        if let u = c.todas.map(\.mtime).max() { con.append((c, u)) } else { vacias.append(c) }
+    }
+    return (con.sorted { $0.1 > $1.1 }.map(\.0),
+            vacias.sorted { $0.nombre.localizedStandardCompare($1.nombre) == .orderedAscending })
+}
+
 struct Lateral: View {
     @EnvironmentObject var store: Store
+    @AppStorage("lateralVerVacias") private var verVacias = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -59,22 +71,12 @@ struct Lateral: View {
             .frame(height: 46)
             ScrollView {
                 VStack(alignment: .leading, spacing: 1) {
-                    Titulo(texto: store.nombreRaiz)
-                    FilaLateral(icono: "square.grid.2x2", nombre: "Todas", detalle: "\(store.total)", activa: store.vista == .inicio, margen: 20) {
-                        store.vista = .inicio
+                    // 1. lo último que usaste, a un clic
+                    if !store.recientes.isEmpty {
+                        Titulo(texto: "Recientes")
+                        ForEach(store.recientes.prefix(5)) { s in FilaRecienteLateral(sesion: s) }
                     }
-                    // tus carpetas, igual que en el Finder
-                    ForEach(store.carpetas.filter { !$0.grupo }) { c in
-                        RamaLateral(carpeta: c, nivel: 0)
-                    }
-                    // lo que no está dentro de ninguna
-                    let aparte = store.carpetas.filter(\.grupo)
-                    if !aparte.isEmpty {
-                        Titulo(texto: "Aparte")
-                        ForEach(aparte) { c in
-                            RamaLateral(carpeta: c, nivel: 0)
-                        }
-                    }
+                    // 2. tus pestañas abiertas
                     CabeceraAbiertas()
                     if store.terminales.isEmpty && store.grupos.isEmpty {
                         Text("Abre una sesión y aparece aquí")
@@ -98,6 +100,27 @@ struct Lateral: View {
                     }
                     ForEach(store.sueltas) { t in
                         FilaTerminal(term: t, numero: (orden.firstIndex(of: t.id) ?? 99) + 1)
+                    }
+                    // 3. proyectos con sesiones, el que usaste último arriba; los vacíos, plegados
+                    Titulo(texto: store.nombreRaiz)
+                    FilaLateral(icono: "square.grid.2x2", nombre: "Todas", detalle: "\(store.total)", activa: store.vista == .inicio, margen: 20) {
+                        store.vista = .inicio
+                    }
+                    let (conSesiones, vacias) = ordenarPorUso(store.carpetas.filter { !$0.grupo })
+                    ForEach(conSesiones) { c in RamaLateral(carpeta: c, nivel: 0) }
+                    if !vacias.isEmpty {
+                        FilaLateral(icono: verVacias ? "chevron.down" : "chevron.right",
+                                    nombre: "\(vacias.count) sin sesiones", detalle: "", activa: false, margen: 20) {
+                            verVacias.toggle()
+                        }
+                        .opacity(0.75)
+                        if verVacias { ForEach(vacias) { c in RamaLateral(carpeta: c, nivel: 0) } }
+                    }
+                    // 4. lo que no está dentro de ninguna
+                    let aparte = store.carpetas.filter(\.grupo).filter { $0.total > 0 }
+                    if !aparte.isEmpty {
+                        Titulo(texto: "Aparte")
+                        ForEach(aparte) { c in RamaLateral(carpeta: c, nivel: 0) }
                     }
                 }
                 .padding(.bottom, 16)
@@ -170,7 +193,8 @@ struct RamaLateral: View {
     var body: some View {
         FilaCarpetaLateral(carpeta: carpeta, nivel: nivel)
         if store.desplegadas.contains(carpeta.id) {
-            ForEach(carpeta.hijos) { h in
+            let (con, vacias) = ordenarPorUso(carpeta.hijos)
+            ForEach(con + vacias) { h in
                 RamaLateral(carpeta: h, nivel: nivel + 1)
             }
         }
@@ -611,6 +635,14 @@ struct Cuadricula: View {
     @EnvironmentObject var store: Store
     @FocusState private var foco: Bool
     @State private var ancho: CGFloat = 900
+    @AppStorage("cuadriculaVerVacias") private var verVacias = false
+
+    /// con sesiones primero (la última que usaste arriba), luego "aparte"; las vacías solo si las pides
+    var enOrden: (visibles: [Carpeta], vacias: [Carpeta]) {
+        let (con, vacias) = ordenarPorUso(store.carpetas.filter { !$0.grupo })
+        let aparte = store.carpetas.filter { $0.grupo && $0.total > 0 }
+        return (con + aparte + (verVacias ? vacias : []), vacias)
+    }
 
     let minimo: CGFloat = 150, espacio: CGFloat = 22, margen: CGFloat = 44
 
@@ -631,10 +663,19 @@ struct Cuadricula: View {
                         .font(Letra.titulo(13)).foregroundColor(Tema.gris)
                         .padding(.bottom, 14)
                 }
+                let orden = enOrden
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: minimo, maximum: 200), spacing: espacio)], spacing: 30) {
-                    ForEach(store.carpetas) { c in
+                    ForEach(orden.visibles) { c in
                         Baldosa(carpeta: c)
                     }
+                }
+                if !orden.vacias.isEmpty {
+                    Button { verVacias.toggle() } label: {
+                        Label(verVacias ? "Ocultar las \(orden.vacias.count) carpetas sin sesiones" : "Ver \(orden.vacias.count) carpetas sin sesiones",
+                              systemImage: verVacias ? "chevron.up" : "chevron.down")
+                    }
+                    .buttonStyle(Pastilla())
+                    .padding(.top, 26)
                 }
             }
             .padding(margen)
@@ -656,7 +697,7 @@ struct Cuadricula: View {
     }
 
     private func paso(_ d: Int) -> KeyPress.Result {
-        let ids = store.carpetas.map(\.id)
+        let ids = enOrden.visibles.map(\.id)
         guard !ids.isEmpty else { return .handled }
         let k = ids.firstIndex(of: store.carpetaSel ?? "") ?? 0
         store.carpetaSel = ids[min(ids.count - 1, max(0, k + d))]
@@ -1113,4 +1154,42 @@ func confirma(_ msg: String, _ detalle: String, _ boton: String) -> Bool {
     a.addButton(withTitle: boton)
     a.addButton(withTitle: "Cancelar")
     return a.runModal() == .alertFirstButtonReturn
+}
+
+/// Una sesión reciente en la barra lateral: título, proyecto y hace cuánto. Un clic la retoma.
+struct FilaRecienteLateral: View {
+    @EnvironmentObject var store: Store
+    let sesion: Sesion
+    @State private var hover = false
+
+    var abierta: Bool { store.abiertas.contains(sesion.id) }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ZStack(alignment: .bottomTrailing) {
+                Image(systemName: sesion.motor == .codex ? "chevron.left.forwardslash.chevron.right" : "sparkle")
+                    .font(Letra.texto(11)).foregroundColor(Tema.gris)
+                if abierta { Circle().fill(Color.green).frame(width: 6, height: 6).offset(x: 3, y: 2) }
+            }
+            .frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(sesion.titulo).font(Letra.texto(12.5)).foregroundColor(Tema.texto).lineLimit(1)
+                Text("\(hace(sesion.mtime)) · \(sesion.proyecto)").font(Letra.texto(11)).foregroundColor(Tema.tenue).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 38)
+        .background(RoundedRectangle(cornerRadius: 6).fill(hover ? Tema.hover : .clear))
+        .contentShape(Rectangle())
+        .onHover { hover = $0 }
+        .onTapGesture { store.retomar(sesion) }
+        .help(sesion.prompt)
+        .contextMenu {
+            Button(abierta ? "Ir a la pestaña" : "Retomar") { store.retomar(sesion) }
+            Button("Mostrar en Finder") { NSWorkspace.shared.open(URL(fileURLWithPath: sesion.cwd)) }
+        }
+        .draggable(sesion.id)
+        .padding(.horizontal, 8)
+    }
 }
