@@ -820,6 +820,9 @@ final class VistaTerminal: LocalProcessTerminalView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         registerForDraggedTypes([.fileURL])
+        // Un clic en un link (http://localhost:8081, una web, una ruta) lo abre, sin tener que apretar ⌘.
+        // Se subraya al pasar el mouse; arrastrar sigue seleccionando texto.
+        linkHighlightMode = .hover
     }
 
     required init?(coder: NSCoder) { fatalError("no se usa") }
