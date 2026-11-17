@@ -65,6 +65,7 @@ struct SesionesApp: App {
     var body: some Scene {
         Window("Temperas Cremosas", id: "principal") {
             Raiz()
+                .background(AccesoVentana()) // para la opción «Pantalla completa» de Configuración
                 // al cambiar de tema se vuelve a dibujar todo con la paleta nueva
                 .id(apariencia.paleta.clave)
                 .environmentObject(apariencia)
