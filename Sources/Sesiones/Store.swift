@@ -886,11 +886,22 @@ final class Term: NSObject, ObservableObject, Identifiable, LocalProcessTerminal
     static var fondo: NSColor { Tema.p.terminalFondo }
 
     func colores() {
+        let claro = !Tema.p.oscuro
         vista.nativeBackgroundColor = Tema.p.terminalFondo
         vista.nativeForegroundColor = Tema.p.terminalTexto
         vista.caretColor = Tema.p.cursor
+        // los 16 colores ANSI: en fondo claro, el blanco y el amarillo de siempre no se leerían
+        vista.installColors(claro ? Term.ansiClaro : SwiftTerm.Color.terminalAppColors)
+        // avisa a Claude Code (tema «Auto») que la terminal cambió de clara a oscura o al revés
+        vista.updateColorScheme(claro ? .light : .dark)
         vista.needsDisplay = true
     }
+
+    /// Colores ANSI para la terminal clara (papel crema #FFFDF7, tinta #1B1520).
+    static let ansiClaro: [SwiftTerm.Color] = [
+        0x1B1520, 0xB42318, 0x1E7A34, 0x8A6100, 0x2F4FD0, 0x8847FF, 0x0F7285, 0x6B6158,
+        0x8C8073, 0xD92D20, 0x2A9142, 0xA87600, 0x3D63E6, 0x9B5CFF, 0x138A9E, 0x1B1520,
+    ].map { SwiftTerm.Color(red8: UInt16($0 >> 16 & 0xFF), green8: UInt16($0 >> 8 & 0xFF), blue8: UInt16($0 & 0xFF)) }
 
     /// lo que se ve en la pestaña
     var etiqueta: String { nombre ?? titulo }

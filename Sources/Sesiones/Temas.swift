@@ -4,7 +4,8 @@ import SwiftUI
 // Temas de la app. "Noche pixel" es el diseño original (cielo pixel azul).
 // "Consola" sale de la marca de Hugo (hugorocha.pe): morado #8847FF, Pixelify Sans para títulos,
 // Chakra Petch para el resto y los números, esquinas de píxel en escalón, carpetas como cartuchos.
-// Como en su web: crema de día y morado de noche, y lo que es pantalla (la terminal, "la tele") siempre oscuro.
+// Como en su web: crema de día y morado de noche. La terminal sigue al tema: crema de día y morada de noche
+// (antes era siempre oscura; Hugo pidió el 2026-11-17 que el modo día sea claro del todo).
 
 enum TemaId: String, CaseIterable, Identifiable {
     case consola, consolaDia, consolaNoche, noche
@@ -47,7 +48,7 @@ struct Paleta {
         tinte: .white, sombraTexto: .black,
         terminalFondo: NSColor(hex: 0x0E1730), terminalTexto: NSColor(hex: 0xE6ECF7), cursor: NSColor(hex: 0x4D8AE6))
 
-    /// la "tele" de la consola: oscura en los dos modos
+    /// la terminal de la consola de noche
     private static let tele = NSColor(hex: 0x120A22)
 
     static let consolaNoche = Paleta(
@@ -66,7 +67,8 @@ struct Paleta {
         azul: Color(hex: 0x8847FF), sel: Color(hex: 0x8847FF, 0.15), hover: Color(hex: 0x3A2612, 0.05),
         tarjeta: Color(hex: 0xFFFDF7), tarjetaHover: Color(hex: 0xFFFFFF), punto: Color(hex: 0x3A2612, 0.10),
         tinte: Color(hex: 0x3A2612), sombraTexto: .clear,
-        terminalFondo: tele, terminalTexto: NSColor(hex: 0xF5F1FF), cursor: NSColor(hex: 0x8847FF))
+        // de día la terminal también es clara (pedido de Hugo, 2026-11-17): papel crema con tinta
+        terminalFondo: NSColor(hex: 0xFFFDF7), terminalTexto: NSColor(hex: 0x1B1520), cursor: NSColor(hex: 0x8847FF))
 
     /// De 6:00 a 17:59 es de día, como hugorocha.pe.
     static func de(_ t: TemaId, _ fecha: Date = Date()) -> Paleta {
