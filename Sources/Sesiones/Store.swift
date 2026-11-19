@@ -827,40 +827,6 @@ final class VistaTerminal: LocalProcessTerminalView {
 
     required init?(coder: NSCoder) { fatalError("no se usa") }
 
-    /// Un link sin "https://" (p. ej. "github.com/password_reset", como lo imprime Claude Code) SwiftTerm lo
-    /// trata como ruta de archivo y lo bloquea ("not an absolute URL with a scheme"). Si parece un dominio, se
-    /// le pone https:// y se abre en el navegador; lo demás sigue al chequeo normal de SwiftTerm.
-    override func requestOpenLink(source: TerminalView, request: TerminalLinkRequest) {
-        if let web = VistaTerminal.webSinEsquema(request.link) {
-            request.openDefault(web)
-        } else {
-            request.openDefault()
-        }
-    }
-
-    static func webSinEsquema(_ link: String) -> String? {
-        let texto = link.trimmingCharacters(in: .whitespaces)
-        guard !texto.contains("://"), !texto.hasPrefix("/"), !texto.hasPrefix("."), !texto.hasPrefix("~") else { return nil }
-        var host = String(texto.prefix { $0 != "/" && $0 != "?" && $0 != "#" })
-        if host.lowercased().hasPrefix("www.") { host = String(host.dropFirst(4)) }
-        if let dosPuntos = host.firstIndex(of: ":") {
-            // "localhost:8080" o "dominio.com:3000" sí; "main.swift:12" no.
-            let base = host[..<dosPuntos]
-            guard base == "localhost" || base.contains(".") else { return nil }
-            host = String(base)
-            if host == "localhost" { return "http://" + texto }
-        }
-        let partes = host.split(separator: ".")
-        guard partes.count >= 2, let tld = partes.last, tld.count >= 2, tld.allSatisfy(\.isLetter),
-              partes.allSatisfy({ !$0.isEmpty && $0.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" } })
-        else { return nil }
-        // Evita archivos sueltos tipo "notas.md" o "app.swift": no son webs.
-        let extensionesDeArchivo: Set<String> = ["md", "swift", "js", "ts", "py", "json", "txt", "html", "css", "sh",
-                                                 "png", "jpg", "pdf", "mp4", "zip", "yml", "yaml", "lock", "log"]
-        if !texto.contains("/") && extensionesDeArchivo.contains(tld.lowercased()) { return nil }
-        return "https://" + texto
-    }
-
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) ? .copy : []
     }
